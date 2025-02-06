@@ -21,7 +21,7 @@ def get_aug(augmentation, size, normalization=True):
                             mask_interpolation=cv2.INTER_NEAREST,
                             ),
         A.HorizontalFlip(p=0.5),
-        A.RandomRotate90(p=0.3),
+        A.RandomRotate90(p=1),
 
         # A.Rotate(limit=45,
         #          border_mode=cv2.BORDER_REFLECT_101,
@@ -46,7 +46,6 @@ def get_aug(augmentation, size, normalization=True):
         aa = augs_train
     else:
         aa = augs_val
-
     if normalization:
         aa += [A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],)]
     aa += [ToTensorV2()]
