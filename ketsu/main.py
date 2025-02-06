@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex, Accuracy
 from torchmetrics.functional import accuracy
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint
 from monai.networks.nets import UNet
 
 
@@ -24,6 +24,10 @@ class ConjConfig(BaseModel):
     arch_name: str = Field('default', l='--arch', s='-A')
     lr: float = 0.001
 
+
+class CustomEarlyStopping(EarlyStopping):
+    def _improvement_message(self, *args, **kwargs):
+        return '\n' + super()._improvement_message(*args, **kwargs)
 
 class ConjModule(pl.LightningModule):
 
@@ -153,7 +157,7 @@ class CLI(BaseMLCLI):
             save_weights_only=True
         )
 
-        early_stopping = EarlyStopping(
+        early_stopping = CustomEarlyStopping(
             monitor='val_loss',
             patience=10,
             mode='min',
@@ -164,7 +168,7 @@ class CLI(BaseMLCLI):
             max_epochs=100,
             devices=1,
             accelerator='gpu',
-            callbacks=[checkpoint, early_stopping],
+            callbacks=[RichProgressBar(), checkpoint, early_stopping],
             log_every_n_steps=1,
             logger=True,
         )
