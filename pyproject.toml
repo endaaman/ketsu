@@ -1,0 +1,19 @@
+[project]
+name = "ketsu"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = "==3.11.*"
+# package-dir = {"" = "."}
+
+dependencies = [
+]
+
+[tool.setuptools]
+packages = ["ketsu"]
+
+[tool.taskipy.tasks]
+main = "python -m ketsu.main"
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
