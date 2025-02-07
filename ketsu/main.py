@@ -14,15 +14,18 @@ from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelChe
 from monai.networks.nets import UNet
 
 
-from .utils.cli import BaseMLCLI, BaseMLArgs
+from .utils.cli import BaseCLI
 from .datasets import ConjDataset
 from .models import get_model
 
 
 class ConjConfig(BaseModel):
+    lr: float = 0.0001
+    batch_size: int = Field(5, s='-B')
+
+    arch_name: str = Field('unet16n', l='--arch', s='-A')
     num_classes: int = 3
-    arch_name: str = Field('default', l='--arch', s='-A')
-    lr: float = 0.001
+    size: int = 512
 
 
 class CustomEarlyStopping(EarlyStopping):
@@ -104,14 +107,13 @@ class ConjModule(pl.LightningModule):
             current_lr = param_group['lr']
             self.log('lr', current_lr, prog_bar=True)
 
-class CLI(BaseMLCLI):
+class CLI(BaseCLI):
 
-    class CommonArgs(BaseMLArgs):
-        # This includes `--seed` param
-        pass
+    class CommonArgs(BaseModel):
+        seed: int = 0
 
     def pre_common(self, a:CommonArgs):
-        pl.seed_everything(0)
+        pl.seed_everything(a.seed)
         torch.set_float32_matmul_precision('medium')
         # matplotlib.use('QtAgg')
 
@@ -128,12 +130,9 @@ class CLI(BaseMLCLI):
         plt.show()
 
     class TrainArgs(CommonArgs, ConjConfig):
-        batch_size: int = Field(10, s='-B')
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
         experiment_name: str = Field('{arch_name}', l='--exp')
-        size: int = 512
-
 
     def run_train(self, a):
         checkpoint_dir = os.path.join(
