@@ -10,11 +10,12 @@ from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex, Accuracy
 from torchmetrics.functional import accuracy
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint, LearningRateMonitor
 from monai.networks.nets import UNet
 
 
-from .utils.cli import BaseCLI
+from .utils import BaseCLI, fix_global_seed
 from .datasets import ConjDataset
 from .models import get_model
 
@@ -22,6 +23,7 @@ from .models import get_model
 class ConjConfig(BaseModel):
     lr: float = 0.0001
     batch_size: int = Field(5, s='-B')
+    plateau: bool = False
 
     arch_name: str = Field('unet16n', l='--arch', s='-A')
     num_classes: int = 3
@@ -99,7 +101,25 @@ class ConjModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config.lr)
-        return optimizer
+        if not self.config.plateau:
+            return optimizer
+        scheduler = {
+            'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=0.1,
+                patience=5,
+                # verbose=True,
+                min_lr=1e-6,
+            ),
+            'monitor': 'val_loss',   # val_lossを監視
+            'interval': 'epoch',
+            'frequency': 1
+        }
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': scheduler
+        }
 
     def on_before_optimizer_step(self, optimizer):
         opt = optimizer
@@ -113,6 +133,7 @@ class CLI(BaseCLI):
         seed: int = 0
 
     def pre_common(self, a:CommonArgs):
+        fix_global_seed(0)
         pl.seed_everything(a.seed)
         torch.set_float32_matmul_precision('medium')
         # matplotlib.use('QtAgg')
@@ -132,13 +153,10 @@ class CLI(BaseCLI):
     class TrainArgs(CommonArgs, ConjConfig):
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
-        experiment_name: str = Field('{arch_name}', l='--exp')
+        experiment_name: str = Field('', l='--exp')
 
     def run_train(self, a):
-        checkpoint_dir = os.path.join(
-            a.checkpoint_dir,
-            a.experiment_name.format(**a.model_dump())
-        )
+        checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -150,7 +168,7 @@ class CLI(BaseCLI):
         checkpoint = ModelCheckpoint(
             monitor='val_loss',
             dirpath=checkpoint_dir,
-            filename='{epoch:02d}-{val_loss:.3f}',
+            filename=a.experiment_name or '{epoch:02d}-{val_loss:.3f}',
             save_top_k=1,
             mode='min',
             save_weights_only=True
@@ -163,13 +181,22 @@ class CLI(BaseCLI):
             verbose=True
         )
 
+        logger = TensorBoardLogger(
+            save_dir='lightning_logs',
+            name=a.experiment_name,         # experiment名
+            # version=a.experiment_name,      # バージョン名
+            default_hp_metric=False
+        )
+
+        lr_monitor = LearningRateMonitor(logging_interval='epoch')
+
         trainer = pl.Trainer(
             max_epochs=100,
             devices=1,
             accelerator='gpu',
-            callbacks=[RichProgressBar(), checkpoint, early_stopping],
+            callbacks=[RichProgressBar(), checkpoint, early_stopping, lr_monitor],
             log_every_n_steps=1,
-            logger=True,
+            logger=logger,
         )
 
         config = ConjConfig(**a.model_dump())
@@ -179,12 +206,15 @@ class CLI(BaseCLI):
 
         print(f'\nBest model path: {checkpoint.best_model_path}')
 
+        # Restore best model
+        module = ConjModule.load_from_checkpoint(checkpoint.best_model_path)
+
         test_ds = ConjDataset(mode='val', size=640, augmentation=False)
         test_loader = DataLoader(test_ds, a.batch_size, num_workers=a.num_workers)
-        trainer = pl.Trainer(
-            accelerator='gpu',
-            devices=1,
-        )
+        # trainer = pl.Trainer(
+        #     accelerator='gpu',
+        #     devices=1,
+        # )
         print(trainer.test(module, test_loader))
 
 
@@ -200,14 +230,14 @@ class CLI(BaseCLI):
         )
         print(module.config)
 
-        val_ds = ConjDataset(mode='val', size=640, augmentation=False)
-        val_loader = DataLoader(val_ds, a.batch_size, num_workers=a.num_workers)
+        test_ds = ConjDataset(mode='val', size=640, augmentation=False)
+        test_loader = DataLoader(test_ds, a.batch_size, num_workers=a.num_workers)
 
         trainer = pl.Trainer(
             accelerator='gpu',
             devices=1,
         )
-        results = trainer.test(module, val_loader)
+        results = trainer.test(module, test_loader)
         print(results)
 
 #        all_preds, all_targets = [], []
