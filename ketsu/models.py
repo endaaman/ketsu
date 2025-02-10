@@ -129,11 +129,11 @@ class UNet11(nn.Module):
         return out
 
 
-class UNet11b(UNet11):
+class UNet11B(UNet11):
     def __init__(self, num_classes):
         super().__init__(num_classes, upsample='bilinear')
 
-class UNet11n(UNet11):
+class UNet11N(UNet11):
     def __init__(self, num_classes):
         super().__init__(num_classes, upsample='nearest')
 
@@ -175,11 +175,11 @@ class UNet16(nn.Module):
         return out
 
 
-class UNet16b(UNet16):
+class UNet16B(UNet16):
     def __init__(self, num_classes):
         super().__init__(num_classes, upsample='bilinear')
 
-class UNet16n(UNet16):
+class UNet16N(UNet16):
     def __init__(self, num_classes):
         super().__init__(num_classes, upsample='nearest')
 
@@ -221,11 +221,11 @@ class AlbuNet(nn.Module):
         return out
 
 
-class AlbuNet_b(AlbuNet):
+class AlbuNetB(AlbuNet):
     def __init__(self, num_classes):
         super().__init__(num_classes, upsample='bilinear')
 
-class AlbuNet_n(AlbuNet):
+class AlbuNetN(AlbuNet):
     def __init__(self, num_classes):
         super().__init__(num_classes, upsample='nearest')
 
@@ -286,14 +286,14 @@ class UResNet(nn.Module):
 
 MODELS = {
     'unet11': UNet11,
-    'unet11b': UNet11b,
-    'unet11n': UNet11n,
+    'unet11b': UNet11B,
+    'unet11n': UNet11N,
     'unet16': UNet16,
-    'unet16b': UNet16b,
-    'unet16n': UNet16n,
+    'unet16b': UNet16B,
+    'unet16n': UNet16N,
     'albunet': AlbuNet,
-    'albunetb': AlbuNet_b,
-    'albunetn': AlbuNet_n,
+    'albunetb': AlbuNetB,
+    'albunetn': AlbuNetN,
     'uresnet': UResNet,
 }
 
