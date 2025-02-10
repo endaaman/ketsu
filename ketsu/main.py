@@ -250,6 +250,7 @@ class CLI(BaseCLI):
         results = trainer.test(module, test_loader)
         print(results)
 
+
 if __name__ == '__main__':
     cli = CLI()
     cli.run()
