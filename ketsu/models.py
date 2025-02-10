@@ -292,8 +292,8 @@ MODELS = {
     'unet16b': UNet16b,
     'unet16n': UNet16n,
     'albunet': AlbuNet,
-    'albunet_b': AlbuNet_b,
-    'albunet_n': AlbuNet_n,
+    'albunetb': AlbuNet_b,
+    'albunetn': AlbuNet_n,
     'uresnet': UResNet,
 }
 

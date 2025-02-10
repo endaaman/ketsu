@@ -138,6 +138,16 @@ class CLI(BaseCLI):
         torch.set_float32_matmul_precision('medium')
         # matplotlib.use('QtAgg')
 
+    class ModelArgs(CommonArgs):
+        arch_name: str = Field('unet16', s='-A', l='--arch')
+
+    def run_model(self, a):
+        M = get_model(a.arch_name)
+        print(M)
+        m = M(num_classes=3)
+        t = torch.randn(2, 3, 256, 256)
+        print(m(t).shape)
+
     def run_image(self, a):
         ds = ConjDataset(mode='val', normalization=False)
         image, label = ds[0]
@@ -153,7 +163,7 @@ class CLI(BaseCLI):
     class TrainArgs(CommonArgs, ConjConfig):
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
-        experiment_name: str = Field('', l='--exp', s='-E')
+        experiment_name: str = Field('base', l='--exp', s='-E')
 
     def run_train(self, a):
         checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
@@ -239,22 +249,6 @@ class CLI(BaseCLI):
         )
         results = trainer.test(module, test_loader)
         print(results)
-
-#        all_preds, all_targets = [], []
-#        for x, t in val_loader:
-#            x = x.to(a.device)
-#            y = module(x)
-#            max_values, max_indices = torch.max(y, dim=1)
-#            output = max_indices.cpu().detach()
-#            all_preds.append(output)
-#            all_targets.append(t)
-
-#        y = torch.cat(all_preds).cpu()
-#        t = torch.cat(all_targets).cpu()
-#        #正解率の計算
-#        acc = Accuracy(task='multiclass', num_classes=3)(y, t)
-#        jac = JaccardIndex(task='multiclass', num_classes=3)(y, t)
-#        print(f"acc is {acc:.4f}, IOU is {jac:.4f}")
 
 if __name__ == '__main__':
     cli = CLI()
