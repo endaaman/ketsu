@@ -153,7 +153,7 @@ class CLI(BaseCLI):
     class TrainArgs(CommonArgs, ConjConfig):
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
-        experiment_name: str = Field('', l='--exp')
+        experiment_name: str = Field('', l='--exp', s='-E')
 
     def run_train(self, a):
         checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
@@ -184,7 +184,6 @@ class CLI(BaseCLI):
         logger = TensorBoardLogger(
             save_dir='lightning_logs',
             name=a.experiment_name,         # experiment名
-            # version=a.experiment_name,      # バージョン名
             default_hp_metric=False
         )
 
