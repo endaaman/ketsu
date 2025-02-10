@@ -168,7 +168,7 @@ class CLI(BaseCLI):
         checkpoint = ModelCheckpoint(
             monitor='val_loss',
             dirpath=checkpoint_dir,
-            filename=a.experiment_name or '{epoch:02d}-{val_loss:.3f}',
+            filename=a.experiment_name or '{version}-{epoch:02d}-{val_loss:.3f}',
             save_top_k=1,
             mode='min',
             save_weights_only=True
@@ -183,7 +183,7 @@ class CLI(BaseCLI):
 
         logger = TensorBoardLogger(
             save_dir='lightning_logs',
-            name=a.experiment_name,         # experiment名
+            name=a.experiment_name,
             default_hp_metric=False
         )
 
@@ -193,6 +193,7 @@ class CLI(BaseCLI):
             max_epochs=100,
             devices=1,
             accelerator='gpu',
+            benchmark=False,
             callbacks=[RichProgressBar(), checkpoint, early_stopping, lr_monitor],
             log_every_n_steps=1,
             logger=logger,

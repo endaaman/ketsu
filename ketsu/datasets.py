@@ -20,14 +20,24 @@ def get_aug(augmentation, size, normalization=True):
         A.HorizontalFlip(p=0.5),
         # A.RandomRotate90(p=0.3), # Rorate90はあまり良くないかも
 
+        # RandomToneCurve+GridDistortion が良さげ
+
+        # A.OpticalDistortion(
+        #     distort_limit=0.2,
+        #     shift_limit=0.15,
+        #     p=0.5
+        # ), # いまいち
+
+        # RandomToneCurveで十分っぽそう
         # A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
         # A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.7),
         # A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
         # A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.5),
         # A.RandomGamma(gamma_limit=(80, 120), p=0.5),
-        A.RandomToneCurve(scale=0.5, p=0.5),
 
-        # A.ElasticTransform(p=0.6), # これもいまいちかも
+        A.RandomToneCurve(scale=0.8, p=0.5),
+
+        # A.ElasticTransform(p=0.6), # いまいち
         A.GridDistortion(p=0.5),
     ]
     augs_val = [
