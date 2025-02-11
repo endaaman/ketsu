@@ -285,16 +285,15 @@ class UResNet(nn.Module):
 
 
 MODELS = {
-    'unet11': UNet11,
-    'unet11b': UNet11B,
-    'unet11n': UNet11N,
-    'unet16': UNet16,
-    'unet16b': UNet16B,
-    'unet16n': UNet16N,
-    'albunet': AlbuNet,
-    'albunetb': AlbuNetB,
-    'albunetn': AlbuNetN,
-    'uresnet': UResNet,
+    'ternaus11': UNet11,
+    'ternaus11b': UNet11B,
+    'ternaus11n': UNet11N,
+    'ternaus16': UNet16,
+    'ternaus16b': UNet16B,
+    'ternaus16n': UNet16N,
+    'albu': AlbuNet,
+    'albub': AlbuNetB,
+    'albun': AlbuNetN,
 }
 
 def get_model(name):

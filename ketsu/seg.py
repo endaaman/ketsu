@@ -25,8 +25,9 @@ class ConjConfig(BaseModel):
     batch_size: int = Field(5, s='-B')
     plateau: bool = False
 
+    with_vessel: bool = Field(False, s='-V')
+
     arch_name: str = Field('unet16n', l='--arch', s='-A')
-    num_classes: int = 3
     size: int = 512
 
 
@@ -41,21 +42,24 @@ class ConjModule(pl.LightningModule):
         self.save_hyperparameters('config')
         self.config = config
 
+        self.num_classes = 4 if self.config.with_vessel else 3
+
         if config.arch_name == 'default':
             self.unet = UNet(
-                  in_channels=3, out_channels=config.num_classes,
+                  in_channels=3,
+                  out_channels=self.num_classes,
                   spatial_dims=2,
                   channels=(64, 128, 256, 512, 1024),
                   strides=(2, 2, 2, 2)
             )
         else:
             M = get_model(config.arch_name)
-            self.unet = M(num_classes=config.num_classes)
+            self.unet = M(num_classes=self.num_classes)
 
         self.criterion = nn.CrossEntropyLoss()
 
-        self.metric_acc = Accuracy(task='multiclass', num_classes=config.num_classes)
-        self.metric_jac = JaccardIndex(task='multiclass', num_classes=config.num_classes)
+        self.metric_acc = Accuracy(task='multiclass', num_classes=self.num_classes)
+        self.metric_jac = JaccardIndex(task='multiclass', num_classes=self.num_classes)
 
 
     def forward(self, x):
@@ -165,13 +169,15 @@ class CLI(BaseCLI):
         checkpoint_dir: str = 'checkpoints'
         experiment_name: str = Field('base', l='--exp', s='-E')
 
-    def run_train(self, a):
-        checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
+    def run_train(self, a:TrainArgs):
+        config = ConjConfig(**a.model_dump())
 
+        dir_name = 'v_' + a.arch_name if config.with_vessel else a.arch_name
+        checkpoint_dir = os.path.join(a.checkpoint_dir, dir_name)
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        train_ds = ConjDataset(mode='train', augmentation=True)
-        val_ds = ConjDataset(mode='val', augmentation=False)
+        train_ds = ConjDataset(mode='train', with_vessel=config.with_vessel, augmentation=True)
+        val_ds = ConjDataset(mode='val', with_vessel=config.with_vessel, augmentation=False)
         train_loader = DataLoader(train_ds, a.batch_size, num_workers=a.num_workers, shuffle=True)
         val_loader = DataLoader(val_ds, a.batch_size, num_workers=a.num_workers)
 
@@ -209,7 +215,6 @@ class CLI(BaseCLI):
             logger=logger,
         )
 
-        config = ConjConfig(**a.model_dump())
         print('config', config)
         module = ConjModule(config)
         trainer.fit(module, train_loader, val_loader)
@@ -219,7 +224,7 @@ class CLI(BaseCLI):
         # Restore best model
         module = ConjModule.load_from_checkpoint(checkpoint.best_model_path)
 
-        test_ds = ConjDataset(mode='val', size=640, augmentation=False)
+        test_ds = ConjDataset(mode='val', size=640, with_vessel=config.with_vessel, augmentation=False)
         test_loader = DataLoader(test_ds, a.batch_size, num_workers=a.num_workers)
         # trainer = pl.Trainer(
         #     accelerator='gpu',

@@ -59,15 +59,16 @@ def get_aug(augmentation, size, normalization=True):
 BASE_DATA_DIR = 'data/'
 
 COLOR_MAP = np.array([
-    [  0,   0,   0,   0], #0 -> transparent -> background
-    [255,   0,   0, 255], #1 -> red         -> iris
-    [  0, 255,   0, 255], #2 -> green       -> vessel
-    [  0,   0, 255, 255], #3 -> blue        -> conjunctiva
+    [  0,   0,   0,   0], #0 -> BG
+    [255,   0,   0, 255], #1 -> red  : cornea
+    [  0,   0, 255, 255], #2 -> blue : conjunctiva
+    [  0, 255,   0, 255], #3 -> green: vessel
 ],dtype=np.uint8)
 
 class ConjDataset(torch.utils.data.Dataset):
 
-    def __init__(self, mode='train', size=512, augmentation=True, normalization=True):
+    def __init__(self, mode='train', size=512, with_vessel=False, augmentation=True, normalization=True):
+        self.with_vessel = with_vessel
         self.image_paths = sorted(glob(f'{BASE_DATA_DIR}/{mode}/image/*.png'))
         self.label_paths = sorted(glob(f'{BASE_DATA_DIR}/{mode}/label/*.png'))
         assert len(self.image_paths) > 0, 'Downloads dataset to data/'
@@ -87,7 +88,8 @@ class ConjDataset(torch.utils.data.Dataset):
         label_arr = np.array(label)
 
         label = np.zeros_like(label_arr[...,0], dtype= np.uint8)
-        for i, j in [(0, 0), (1, 1), (2, 2), (3, 2)]:
+        vessel_mask_idx = 3 if self.with_vessel else 2
+        for i, j in [(0, 0), (1, 1), (2, 2), (3, vessel_mask_idx)]:
             mask = np.all(label_arr == COLOR_MAP[i], axis=-1)
             label[mask] = j
 
