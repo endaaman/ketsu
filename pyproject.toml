@@ -19,6 +19,7 @@ dependencies = [
     "pillow>=11.1.0",
     "pydantic>=2.10.6",
     "pytorch-lightning>=2.5.0.post0",
+    "scikit-image>=0.25.1",
     "scikit-optimize>=0.10.2",
     "taskipy>=1.14.1",
     "tensorboard>=2.18.0",

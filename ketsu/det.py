@@ -5,7 +5,7 @@ from tqdm import tqdm
 from PIL import Image
 from matplotlib import pyplot as plt
 
-from .detectors import SimpleHSVDetector
+from .detectors import SimpleHSVDetector, AdaptiveHSVDetector, CLAHEHSVDetector
 
 
 def load_dataset(split='train'):
@@ -32,70 +32,40 @@ def load_dataset(split='train'):
 
     return images, conj_masks, vessel_masks
 
-def main():
-    # データの読み込み
-    print("Loading training data...")
-    train_images, train_conj_masks, train_vessel_masks = load_dataset('train')
 
-    print("Loading validation data...")
-    val_images, val_conj_masks, val_vessel_masks = load_dataset('val')
-
-    # detector = AdaptiveHSVDetector()
-    detector = SimpleHSVDetector()
-
-    # 学習
-    print("Starting optimization...")
-    result = detector.optimize(
-        train_images,
-        train_conj_masks,
-        train_vessel_masks,
-        n_iter=50
+def evaluate_detector(detector, train_images, train_conj_masks, train_vessel_masks,
+                     val_images, val_conj_masks, val_vessel_masks):
+    # Optimize parameters
+    best_params, train_iou = detector.optimize(
+        train_images, train_conj_masks, train_vessel_masks, n_iter=50
     )
 
-    best_params = {
-        'h_min': int(result.x[0]),
-        'h_max': int(result.x[1]),
-        's_min': int(result.x[2]),
-        's_max': int(result.x[3]),
-        'v_min': int(result.x[4]),
-        'v_max': int(result.x[5]),
-    }
+    # Evaluate on validation set
+    val_iou_mean, val_iou_std = detector.evaluate(
+        val_images, val_conj_masks, val_vessel_masks, best_params
+    )
 
-    # 検証データでの評価
-    print("Evaluating on validation set...")
-    val_ious = []
-    for image, conj_mask, vessel_mask in tqdm(zip(val_images, val_conj_masks, val_vessel_masks)):
-        pred_mask = detector.detect_vessels(image, conj_mask, best_params)
-        iou = detector._compute_iou(pred_mask, vessel_mask)
-        val_ious.append(iou)
-
-    # 結果の表示
-    print("\nResults:")
+    # Print results
+    print(f"\nResults:")
     print(f"Best parameters: {best_params}")
-    print(f"Training IoU: {-result.fun:.4f}")
-    print(f"Validation IoU: {np.mean(val_ious):.4f} ± {np.std(val_ious):.4f}")
+    print(f"Training IoU: {train_iou:.4f}")
+    print(f"Validation IoU: {val_iou_mean:.4f} ± {val_iou_std:.4f}")
+    return best_params, train_iou, val_iou_mean, val_iou_std
 
-    # オプション：最良と最悪のケースを可視化
-    best_idx = np.argmax(val_ious)
-    worst_idx = np.argmin(val_ious)
 
-    p = [(best_idx, "Best"), (worst_idx, "Worst")]
-    pred_masks = {}
-    for idx, case in p:
-        pred_mask = detector.detect_vessels(
-            val_images[idx],
-            val_conj_masks[idx],
-            best_params,
-        )
-        pred_masks[case] = pred_mask
-        print(f"\n{case} case IoU: {val_ious[idx]:.4f}")
+def main():
+    train_images, train_conj_masks, train_vessel_masks = load_dataset('train')
+    val_images, val_conj_masks, val_vessel_masks = load_dataset('val')
 
-    for i, (idx, case) in enumerate(p):
-        plt.subplot(2, 2, i*2+1)
-        plt.imshow(val_images[idx])
-        plt.subplot(2, 2, i*2+2)
-        plt.imshow(pred_masks[case])
-    plt.show()
+    # detector = SimpleHSVDetector()
+    # detector = AdaptiveHSVDetector()
+    detector = CLAHEHSVDetector()
+    results = evaluate_detector(
+        detector,
+        train_images, train_conj_masks, train_vessel_masks,
+        val_images, val_conj_masks, val_vessel_masks
+    )
+
 
 if __name__ == "__main__":
     main()
