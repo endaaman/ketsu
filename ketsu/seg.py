@@ -27,7 +27,7 @@ class ConjConfig(BaseModel):
 
     with_vessel: bool = Field(False, s='-V')
 
-    arch_name: str = Field('unet16n', l='--arch', s='-A')
+    arch_name: str = Field('albun', l='--arch', s='-A')
     size: int = 512
 
 
