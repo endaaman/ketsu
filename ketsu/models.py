@@ -5,6 +5,9 @@ from torchvision import models
 import torch
 import torchvision
 
+import segmentation_models_pytorch as smp
+from monai.networks.nets import UNet
+
 
 # activation = nn.LogSoftmax(dim=1)
 activation = nn.Softmax2d()
@@ -284,23 +287,39 @@ class UResNet(nn.Module):
         return out
 
 
-MODELS = {
-    'ternaus11': UNet11,
-    'ternaus11b': UNet11B,
-    'ternaus11n': UNet11N,
-    'ternaus16': UNet16,
-    'ternaus16b': UNet16B,
-    'ternaus16n': UNet16N,
-    'albu': AlbuNet,
-    'albub': AlbuNetB,
-    'albun': AlbuNetN,
-}
+def create_model(name, num_classes, pretrained=True):
+    if name == 'baseline':
+        m = UNet(
+              in_channels=3,
+              out_channels=num_classes,
+              spatial_dims=2,
+              channels=(64, 128, 256, 512, 1024),
+              strides=(2, 2, 2, 2)
+        )
+        return m
 
-def get_model(name):
-    m = MODELS.get(name.lower())
-    if not m:
+    if name.startswith('smp.'):
+        return smp.Unet(name.replace('smp.', ''),
+                        in_channels=3,
+                        classes=num_classes,
+                        encoder_weights='imagenet' if pretrained else None)
+
+    M = {
+        'ternaus11': UNet11,
+        'ternaus11b': UNet11B,
+        'ternaus11n': UNet11N,
+        'ternaus16': UNet16,
+        'ternaus16b': UNet16B,
+        'ternaus16n': UNet16N,
+        'albu': AlbuNet,
+        'albub': AlbuNetB,
+        'albun': AlbuNetN,
+    }.get(name.lower())
+
+    if not M:
         raise Exception(f'invalid model name: {name}')
-    return m
+
+    return M(num_classes=num_classes)
 
 def count_model_params(model):
     return sum(p.numel() for p in model.parameters())
@@ -313,9 +332,3 @@ def validate_model(name, tile_size):
     with torch.no_grad():
         output_tensor = m(input_tensor)
         print('out: ', output_tensor.size())
-
-
-def list_models():
-    for k, M in MODELS.items():
-        m = M(num_classes=5)
-        print('{}: {:,}'.format(M.__name__, count_model_params(m)))

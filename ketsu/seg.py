@@ -12,18 +12,18 @@ from torchmetrics.functional import accuracy
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint, LearningRateMonitor
-from monai.networks.nets import UNet
 
 
 from .utils import BaseCLI, fix_global_seed
 from .datasets import ConjDataset
-from .models import get_model
+from .models import create_model
 
 
 class ConjConfig(BaseModel):
     lr: float = 0.0001
     batch_size: int = Field(5, s='-B')
     plateau: bool = False
+    nopretrained: bool = False
 
     with_vessel: bool = Field(False, s='-V')
 
@@ -43,19 +43,9 @@ class ConjModule(pl.LightningModule):
         self.config = config
 
         self.num_classes = 4 if self.config.with_vessel else 3
-
-        if config.arch_name == 'default':
-            self.unet = UNet(
-                  in_channels=3,
-                  out_channels=self.num_classes,
-                  spatial_dims=2,
-                  channels=(64, 128, 256, 512, 1024),
-                  strides=(2, 2, 2, 2)
-            )
-        else:
-            M = get_model(config.arch_name)
-            self.unet = M(num_classes=self.num_classes)
-
+        self.unet = create_model(config.arch_name,
+                                 num_classes=self.num_classes,
+                                 pretrained=not config.nopretrained)
         self.criterion = nn.CrossEntropyLoss()
 
         self.metric_acc = Accuracy(task='multiclass', num_classes=self.num_classes)
@@ -146,9 +136,7 @@ class CLI(BaseCLI):
         arch_name: str = Field('unet16', s='-A', l='--arch')
 
     def run_model(self, a):
-        M = get_model(a.arch_name)
-        print(M)
-        m = M(num_classes=3)
+        m = create_model(a.arch_name, num_classes=3)
         t = torch.randn(2, 3, 256, 256)
         print(m(t).shape)
 
