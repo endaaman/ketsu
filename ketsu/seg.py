@@ -5,6 +5,7 @@ from PIL import Image
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
+from pydantic_autocli import AutoCLI, param
 from torch import nn
 from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex, Accuracy
@@ -14,20 +15,20 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint, LearningRateMonitor
 
 
-from .utils import BaseCLI, fix_global_seed
+from .utils import fix_global_seed
 from .datasets import ConjDataset
 from .models import create_model
 
 
 class ConjConfig(BaseModel):
     lr: float = 0.0001
-    batch_size: int = Field(5, s='-B')
+    batch_size: int = param(5, s='-B')
     plateau: bool = False
     nopretrained: bool = False
 
-    with_vessel: bool = Field(False, s='-V')
+    with_vessel: bool = param(False, s='-V')
 
-    arch_name: str = Field('unet16n', l='--arch', s='-A')
+    arch_name: str = param('unet16n', l='--arch', s='-A')
     size: int = 512
 
 
@@ -121,19 +122,19 @@ class ConjModule(pl.LightningModule):
             current_lr = param_group['lr']
             self.log('lr', current_lr, prog_bar=True)
 
-class CLI(BaseCLI):
+class CLI(AutoCLI):
 
     class CommonArgs(BaseModel):
         seed: int = 0
 
     def pre_common(self, a:CommonArgs):
-        fix_global_seed(0)
+        fix_global_seed(a.seed)
         pl.seed_everything(a.seed)
         torch.set_float32_matmul_precision('medium')
         # matplotlib.use('QtAgg')
 
     class ModelArgs(CommonArgs):
-        arch_name: str = Field('unet16', s='-A', l='--arch')
+        arch_name: str = param('unet16', s='-A', l='--arch')
 
     def run_model(self, a):
         m = create_model(a.arch_name, num_classes=3)
@@ -153,9 +154,10 @@ class CLI(BaseCLI):
         plt.show()
 
     class TrainArgs(CommonArgs, ConjConfig):
+        fold: int = param()
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
-        experiment_name: str = Field('base', l='--exp', s='-E')
+        experiment_name: str = param('base', l='--exp', s='-E')
 
     def run_train(self, a:TrainArgs):
         config = ConjConfig(**a.model_dump())
@@ -222,8 +224,8 @@ class CLI(BaseCLI):
 
 
     class PredictArgs(CommonArgs):
-        checkpoint: str = Field(..., s='-c')
-        batch_size: int = Field(16, s='-B')
+        checkpoint: str = param(..., s='-c')
+        batch_size: int = param(16, s='-B')
         num_workers: int = 4
         device: str = 'cuda'
 

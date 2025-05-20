@@ -18,6 +18,7 @@ dependencies = [
     "pandas>=2.2.3",
     "pillow>=11.1.0",
     "pydantic>=2.10.6",
+    "pydantic-autocli>=0.1.5",
     "pyqt6>=6.8.1",
     "pytorch-lightning>=2.5.0.post0",
     "scikit-image>=0.25.1",
@@ -37,3 +38,8 @@ packages = ["ketsu"]
 [tool.taskipy.tasks]
 seg = "python -m ketsu.seg"
 det = "python -m ketsu.det"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.0.1",
+]

@@ -56,19 +56,33 @@ def get_aug(augmentation, size, normalization=True):
 
 
 
-CONJ_DATA_DIR = './data/conju/rev1'
+CONJ_DATA_DIR = './data/conju'
 
 COLOR_MAP = np.array([
     [  0,   0,   0,   0], #0 -> BG
     [255,   0,   0, 255], #1 -> red  : cornea
     [  0,   0, 255, 255], #2 -> blue : conjunctiva
-    [  0, 255,   0, 255], #3 -> green: vessel
+    # [  0, 255,   0, 255], #3 -> green: vessel
 ],dtype=np.uint8)
 
-class ConjDatasetRev1(torch.utils.data.Dataset):
+class ConjDataset(torch.utils.data.Dataset):
 
-    def __init__(self, mode='train', size=512, with_vessel=False, augmentation=True, normalization=True):
-        self.with_vessel = with_vessel
+    def __init__(self, fold, mode='train', size=512, augmentation=True, normalization=True):
+        self.fold = fold
+        df = pd.read_csv('./data/dataset_eye.csv')
+        # Select items that have label mask
+        if mode == 'train':
+            target_mask = df['fold'] != fold
+        else:
+            target_mask = df['fold'] == fold
+        df = df[data_mask]
+        self.df = df[df['label'] > 0].copy()
+
+        for i, row in df.iterrows():
+            id = row['test_ID']
+            rl = row['R/L']
+            fn = f'{str(id).zfill(4)}_{rl}_01.png'
+
         self.image_paths = sorted(glob(f'{CONJ_DATA_DIR}/{mode}/image/*.png'))
         self.label_paths = sorted(glob(f'{CONJ_DATA_DIR}/{mode}/label/*.png'))
         assert len(self.image_paths) > 0, 'Downloads dataset to data/'
@@ -88,10 +102,6 @@ class ConjDatasetRev1(torch.utils.data.Dataset):
         label_arr = np.array(label)
 
         label = np.zeros_like(label_arr[...,0], dtype= np.uint8)
-        vessel_mask_idx = 3 if self.with_vessel else 2
-        for i, j in [(0, 0), (1, 1), (2, 2), (3, vessel_mask_idx)]:
-            mask = np.all(label_arr == COLOR_MAP[i], axis=-1)
-            label[mask] = j
 
         auged = self.albu(image=image_arr, mask=label)
         x = auged['image']
