@@ -56,7 +56,7 @@ def get_aug(augmentation, size, normalization=True):
 
 
 
-BASE_DATA_DIR = 'data/'
+CONJ_DATA_DIR = './data/conju/rev1'
 
 COLOR_MAP = np.array([
     [  0,   0,   0,   0], #0 -> BG
@@ -65,12 +65,12 @@ COLOR_MAP = np.array([
     [  0, 255,   0, 255], #3 -> green: vessel
 ],dtype=np.uint8)
 
-class ConjDataset(torch.utils.data.Dataset):
+class ConjDatasetRev1(torch.utils.data.Dataset):
 
     def __init__(self, mode='train', size=512, with_vessel=False, augmentation=True, normalization=True):
         self.with_vessel = with_vessel
-        self.image_paths = sorted(glob(f'{BASE_DATA_DIR}/{mode}/image/*.png'))
-        self.label_paths = sorted(glob(f'{BASE_DATA_DIR}/{mode}/label/*.png'))
+        self.image_paths = sorted(glob(f'{CONJ_DATA_DIR}/{mode}/image/*.png'))
+        self.label_paths = sorted(glob(f'{CONJ_DATA_DIR}/{mode}/label/*.png'))
         assert len(self.image_paths) > 0, 'Downloads dataset to data/'
         assert len(self.label_paths) > 0, 'Downloads dataset to data/'
 
