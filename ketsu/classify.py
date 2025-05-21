@@ -123,6 +123,20 @@ class CoralLightningModule(pl.LightningModule):
         self.log('val_acc', acc, prog_bar=True)
         return loss
 
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
+        logits = self(x)
+        loss = self.criterion(logits, y_coral)
+        
+        # 予測とaccuracyの計算
+        pred = self._get_prediction(logits)
+        acc = self.metric_acc(pred, y)
+        
+        self.log('test_loss', loss, prog_bar=True)
+        self.log('test_acc', acc, prog_bar=True)
+        return {'test_loss': loss, 'test_acc': acc}
+
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.config.lr)
 
@@ -227,6 +241,11 @@ class CLI(AutoCLI):
         module = CoralLightningModule.load_from_checkpoint(a.checkpoint)
         print('Config:', module.config)
 
+        # デバイスの設定
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        module = module.to(device)
+        module.eval()
+
         # チェックポイントのパスから実験ディレクトリを取得
         exp_dir = os.path.dirname(a.checkpoint)
         version_dir = os.path.dirname(exp_dir)  # version_0 の親ディレクトリ
@@ -238,10 +257,11 @@ class CLI(AutoCLI):
         # 予測を収集
         all_preds = []
         all_labels = []
-        module.eval()
         with torch.no_grad():
             for batch in test_loader:
                 x, y = batch
+                x = x.to(device)
+                y = y.to(device)
                 logits = module(x)
                 preds = module._get_prediction(logits)
                 all_preds.extend(preds.cpu().numpy())
