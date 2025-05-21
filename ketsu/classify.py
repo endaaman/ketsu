@@ -14,6 +14,9 @@ from torchmetrics.functional import accuracy
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint, LearningRateMonitor
+import json
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
 from .utils import fix_global_seed
 from .datasets import SpotsDataset
@@ -58,6 +61,7 @@ class CoralModel(nn.Module):
 
 
 class CoralConfig(BaseModel):
+    fold: int = param(1, s='-f', l='--fold')
     model_name: str = param('resnet34', s='-M', l='--model')
     num_classes: int = 4
     pretrained: bool = True
@@ -81,16 +85,28 @@ class CoralLightningModule(pl.LightningModule):
         self.config = config
         self.model = CoralModel(config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
         self.criterion = nn.BCEWithLogitsLoss()
+        self.metric_acc = Accuracy(task='multiclass', num_classes=config.num_classes)
 
     def forward(self, x):
         return self.model(x)
+
+    def _get_prediction(self, logits):
+        # CORALの予測をクラスに変換
+        # logits: (B, num_classes-1) -> pred: (B,)
+        return (logits > 0).sum(dim=1)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
         loss = self.criterion(logits, y_coral)
+        
+        # 予測とaccuracyの計算
+        pred = self._get_prediction(logits)
+        acc = self.metric_acc(pred, y)
+        
         self.log('train_loss', loss, prog_bar=True)
+        self.log('train_acc', acc, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -98,7 +114,13 @@ class CoralLightningModule(pl.LightningModule):
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
         loss = self.criterion(logits, y_coral)
+        
+        # 予測とaccuracyの計算
+        pred = self._get_prediction(logits)
+        acc = self.metric_acc(pred, y)
+        
         self.log('val_loss', loss, prog_bar=True)
+        self.log('val_acc', acc, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
@@ -115,17 +137,13 @@ class CLI(AutoCLI):
         torch.set_float32_matmul_precision('medium')
 
     class TrainArgs(CommonArgs, CoralConfig):
-        fold: int = param(1, s='-f', l='--fold')
         num_workers: int = param(4, s='-w', l='--num-workers')
-        experiment_name: str = param('base', l='--exp', s='-E')
 
     def run_train(self, a: TrainArgs):
         config = CoralConfig(**a.model_dump())
 
         # Create experiment name and save directory
         exp_name = f'coral_{a.model_name}_fold{a.fold}'
-        if a.experiment_name != 'base':
-            exp_name = f'{exp_name}_{a.experiment_name}'
         save_dir = os.path.join('checkpoints', exp_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -135,11 +153,16 @@ class CLI(AutoCLI):
         train_loader = DataLoader(train_dataset, a.batch_size, num_workers=a.num_workers, shuffle=True)
         val_loader = DataLoader(val_dataset, a.batch_size, num_workers=a.num_workers)
 
+        # Create logger first to get version
+        logger = TensorBoardLogger('checkpoints', name=exp_name)
+        version_dir = os.path.join(save_dir, f'version_{logger.version}')
+        os.makedirs(version_dir, exist_ok=True)
+
         # Setup callbacks
         callbacks = [
             EarlyStopping(monitor='val_loss', patience=config.early_stopping_patience, mode='min'),
             ModelCheckpoint(
-                dirpath=save_dir,
+                dirpath=version_dir,  # TensorBoardのversion_%dフォルダに保存
                 monitor='val_loss',
                 mode='min',
                 save_top_k=1,
@@ -153,7 +176,7 @@ class CLI(AutoCLI):
         trainer = pl.Trainer(
             max_epochs=config.max_epochs,
             callbacks=callbacks,
-            logger=TensorBoardLogger('checkpoints', name=exp_name),
+            logger=logger,
             accelerator='auto',
             devices=1
         )
@@ -161,6 +184,17 @@ class CLI(AutoCLI):
         # Train
         module = CoralLightningModule(config)
         trainer.fit(module, train_loader, val_loader)
+
+        # 学習後の評価と結果の保存
+        results = trainer.test(module, val_loader)
+        
+        # 結果をJSONとして保存
+        results_dict = {
+            'test_results': results[0],
+            'config': config.model_dump()
+        }
+        with open(os.path.join(version_dir, 'results.json'), 'w') as f:
+            json.dump(results_dict, f, indent=2)
 
     class ModelArgs(CommonArgs):
         model_name: str = param('resnet34', s='-M', l='--model')
@@ -191,14 +225,86 @@ class CLI(AutoCLI):
 
     def run_predict(self, a: PredictArgs):
         module = CoralLightningModule.load_from_checkpoint(a.checkpoint)
-        print(module.config)
+        print('Config:', module.config)
+
+        # チェックポイントのパスから実験ディレクトリを取得
+        exp_dir = os.path.dirname(a.checkpoint)
+        version_dir = os.path.dirname(exp_dir)  # version_0 の親ディレクトリ
+        version = os.path.basename(exp_dir).split('_')[1]  # version_0 から 0 を取得
 
         test_dataset = SpotsDataset(fold=module.config.fold, mode='val', augmentation=False)
         test_loader = DataLoader(test_dataset, a.batch_size, num_workers=a.num_workers)
+        
+        # 予測を収集
+        all_preds = []
+        all_labels = []
+        module.eval()
+        with torch.no_grad():
+            for batch in test_loader:
+                x, y = batch
+                logits = module(x)
+                preds = module._get_prediction(logits)
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(y.cpu().numpy())
 
-        trainer = pl.Trainer(accelerator='auto', devices=1)
-        results = trainer.test(module, test_loader)
-        print(results)
+        # 結果を表示
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        
+        # 混同行列
+        cm = confusion_matrix(all_labels, all_preds)
+        print('\nConfusion Matrix:')
+        print(cm)
+        
+        # 混同行列のプロット
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.savefig(os.path.join(exp_dir, 'confusion_matrix.png'))
+        plt.close()
+        
+        # 各クラスの予測分布
+        print('\nPrediction Distribution:')
+        class_dist = {}
+        for i in range(module.config.num_classes):
+            pred_count = (all_preds == i).sum()
+            true_count = (all_labels == i).sum()
+            print(f'Class {i}: Predicted {pred_count}, Actual {true_count}')
+            class_dist[f'class_{i}'] = {
+                'predicted': int(pred_count),
+                'actual': int(true_count)
+            }
+        
+        # 予測分布のプロット
+        plt.figure(figsize=(10, 6))
+        x = np.arange(module.config.num_classes)
+        width = 0.35
+        plt.bar(x - width/2, [class_dist[f'class_{i}']['actual'] for i in range(module.config.num_classes)], 
+                width, label='Actual')
+        plt.bar(x + width/2, [class_dist[f'class_{i}']['predicted'] for i in range(module.config.num_classes)], 
+                width, label='Predicted')
+        plt.title('Class Distribution')
+        plt.xlabel('Class')
+        plt.ylabel('Count')
+        plt.legend()
+        plt.savefig(os.path.join(exp_dir, 'class_distribution.png'))
+        plt.close()
+        
+        # 全体のaccuracy
+        acc = (all_preds == all_labels).mean()
+        print(f'\nOverall Accuracy: {acc:.4f}')
+        
+        # 結果をJSONとして保存
+        results = {
+            'accuracy': float(acc),
+            'confusion_matrix': cm.tolist(),
+            'class_distribution': class_dist,
+            'config': module.config.model_dump()
+        }
+        with open(os.path.join(exp_dir, 'predict_results.json'), 'w') as f:
+            json.dump(results, f, indent=2)
 
 
 if __name__ == '__main__':
