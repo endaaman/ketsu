@@ -15,6 +15,14 @@ activation = nn.Softmax2d()
 # activation = lambda x: x
 
 
+class CrossEntropy(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, y):
+        print()
+
+
 def pack(arr):
     return [x for x in arr if x]
 

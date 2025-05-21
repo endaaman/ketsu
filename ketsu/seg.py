@@ -18,15 +18,16 @@ from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelChe
 from .utils import fix_global_seed
 from .datasets import ConjDataset
 from .models import create_model
+from .losses import get_loss, CrossEntropy
 
 
 class ConjConfig(BaseModel):
     lr: float = 0.0001
     batch_size: int = param(5, s='-B')
+    fold: int = 0
+    loss: str = param('ce', choices=['dice', 'focal', 'iou', 'combined'])
     plateau: bool = False
     nopretrained: bool = False
-
-    with_vessel: bool = param(False, s='-V')
 
     arch_name: str = param('unet16n', l='--arch', s='-A')
     size: int = 512
@@ -43,11 +44,11 @@ class ConjModule(pl.LightningModule):
         self.save_hyperparameters('config')
         self.config = config
 
-        self.num_classes = 4 if self.config.with_vessel else 3
+        self.num_classes = 3
         self.unet = create_model(config.arch_name,
                                  num_classes=self.num_classes,
                                  pretrained=not config.nopretrained)
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = get_loss('ce')
 
         self.metric_acc = Accuracy(task='multiclass', num_classes=self.num_classes)
         self.metric_jac = JaccardIndex(task='multiclass', num_classes=self.num_classes)
@@ -96,31 +97,13 @@ class ConjModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config.lr)
-        if not self.config.plateau:
-            return optimizer
-        scheduler = {
-            'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode='min',
-                factor=0.1,
-                patience=5,
-                # verbose=True,
-                min_lr=1e-6,
-            ),
-            'monitor': 'val_loss',   # val_lossを監視
-            'interval': 'epoch',
-            'frequency': 1
-        }
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': scheduler
-        }
+        return optimizer
 
-    def on_before_optimizer_step(self, optimizer):
-        opt = optimizer
-        for param_group in opt.param_groups:
-            current_lr = param_group['lr']
-            self.log('lr', current_lr, prog_bar=True)
+    # def on_before_optimizer_step(self, optimizer):
+    #     opt = optimizer
+    #     for param_group in opt.param_groups:
+    #         current_lr = param_group['lr']
+    #         self.log('lr', current_lr, prog_bar=True)
 
 class CLI(AutoCLI):
 
@@ -162,8 +145,7 @@ class CLI(AutoCLI):
     def run_train(self, a:TrainArgs):
         config = ConjConfig(**a.model_dump())
 
-        dir_name = 'v_' + a.arch_name if config.with_vessel else a.arch_name
-        checkpoint_dir = os.path.join(a.checkpoint_dir, dir_name)
+        checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         train_ds = ConjDataset(mode='train', with_vessel=config.with_vessel, augmentation=True)
