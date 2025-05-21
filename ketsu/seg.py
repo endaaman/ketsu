@@ -24,12 +24,12 @@ from .losses import get_loss, CrossEntropy
 class ConjConfig(BaseModel):
     lr: float = 0.0001
     batch_size: int = param(5, s='-B')
-    fold: int = 0
+    fold: int = 1
     loss: str = param('ce', choices=['dice', 'focal', 'iou', 'combined'])
     plateau: bool = False
     nopretrained: bool = False
 
-    arch_name: str = param('unet16n', l='--arch', s='-A')
+    arch_name: str = param('ternaus16n', l='--arch', s='-A')
     size: int = 512
 
 
@@ -125,19 +125,24 @@ class CLI(AutoCLI):
         print(m(t).shape)
 
     def run_image(self, a):
-        ds = ConjDataset(mode='val', normalization=False)
-        image, label = ds[0]
-        print(image.shape)
-        print(image.dtype)
-        print(type(label))
-        plt.subplot(1,2,1)
-        plt.imshow(Image.fromarray((image.numpy().transpose(1, 2, 0)*255).astype(np.uint8)))
-        plt.subplot(1,2,2)
-        plt.imshow(label.numpy())
+        ds = ConjDataset(fold=1, mode='val', augmentation=True, normalization=False)
+        print(ds, len(ds))
+        count = 5
+        for i in range(count):
+            image = ds.images[i]
+            x, y = ds[i]
+            print('x', type(x), x.shape)
+            print('y', type(y), y.shape)
+            plt.subplot(count,3,3*i+1)
+            plt.imshow(image)
+            plt.subplot(count,3,3*i+2)
+            # plt.imshow(Image.fromarray((x.numpy().transpose(1, 2, 0)*255).astype(np.uint8)))
+            plt.imshow(x.numpy().transpose(1, 2, 0))
+            plt.subplot(count,3,3*i+3)
+            plt.imshow(y.numpy())
         plt.show()
 
     class TrainArgs(CommonArgs, ConjConfig):
-        fold: int = param()
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
         experiment_name: str = param('base', l='--exp', s='-E')
@@ -148,8 +153,8 @@ class CLI(AutoCLI):
         checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        train_ds = ConjDataset(mode='train', with_vessel=config.with_vessel, augmentation=True)
-        val_ds = ConjDataset(mode='val', with_vessel=config.with_vessel, augmentation=False)
+        train_ds = ConjDataset(fold=a.fold, mode='train', augmentation=True)
+        val_ds = ConjDataset(fold=a.fold, mode='val', augmentation=False)
         train_loader = DataLoader(train_ds, a.batch_size, num_workers=a.num_workers, shuffle=True)
         val_loader = DataLoader(val_ds, a.batch_size, num_workers=a.num_workers)
 

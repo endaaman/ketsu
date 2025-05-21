@@ -1,4 +1,6 @@
+import pandas as pd
 from glob import glob
+from tqdm import tqdm
 import cv2
 from PIL import Image
 import numpy as np
@@ -75,40 +77,46 @@ class ConjDataset(torch.utils.data.Dataset):
             target_mask = df['fold'] != fold
         else:
             target_mask = df['fold'] == fold
-        df = df[data_mask]
-        self.df = df[df['label'] > 0].copy()
+        df = df[target_mask]
+        df = df[df['label'] > 0].copy()
+        self.df = df
 
-        for i, row in df.iterrows():
+        self.images = []
+        self.labels = []
+        self.masks = []
+        for i, row in tqdm(df.iterrows(), total=len(df)):
             id = row['test_ID']
             rl = row['R/L']
             fn = f'{str(id).zfill(4)}_{rl}_01.png'
 
-        self.image_paths = sorted(glob(f'{CONJ_DATA_DIR}/{mode}/image/*.png'))
-        self.label_paths = sorted(glob(f'{CONJ_DATA_DIR}/{mode}/label/*.png'))
-        assert len(self.image_paths) > 0, 'Downloads dataset to data/'
-        assert len(self.label_paths) > 0, 'Downloads dataset to data/'
+            # image = Image.open(J('./data/conju/image/0001_L_01.png/'))
+            image = Image.open(f'./data/conju/image/{fn}').convert('RGB')
+            label = Image.open(f'./data/conju/label/{fn}').copy()
+            mask = self.as_mask(np.array(label))
+            self.images.append(image)
+            self.labels.append(label)
+            self.masks.append(mask)
 
-        self.images = [Image.open(p).convert('RGB').copy() for p in self.image_paths]
-        self.labels = [Image.open(p).copy() for p in self.label_paths]
-
-        # self.transform = transforms.Compose([ transforms.ToTensor() ])
         self.albu = get_aug(augmentation, size=size, normalization=normalization)
 
+    def as_mask(self, label):
+        label = np.array(label)
+        mask = np.zeros(label.shape[:-1], dtype=np.uint8)
+        for i in range(3):
+            match = np.all(label == COLOR_MAP[i], axis=-1)
+            mask[match] = i
+        return mask
 
     def __getitem__(self, idx):
-        image = self.images[idx]
-        image_arr = np.array(image)
-        label = self.labels[idx]
-        label_arr = np.array(label)
+        image = np.array(self.images[idx])
+        mask = self.masks[idx]
 
-        label = np.zeros_like(label_arr[...,0], dtype= np.uint8)
-
-        auged = self.albu(image=image_arr, mask=label)
+        auged = self.albu(image=image, mask=mask)
         x = auged['image']
-        t = auged['mask']
-        return x, t.to(torch.int64)
+        y = auged['mask']
+        return x, y.to(torch.int64)
 
 
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.images)
 
