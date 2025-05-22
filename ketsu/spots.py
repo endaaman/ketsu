@@ -17,8 +17,10 @@ from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelChe
 import json
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
+import pandas as pd
+import glob
 
-from .utils import fix_global_seed, CustomEarlyStopping
+from .utils import fix_global_seed, CustomEarlyStopping, resolve_checkpoint_path
 from .datasets import SpotsDataset
 
 
@@ -62,9 +64,12 @@ class CoralModel(nn.Module):
         self.base = timm.create_model(base, pretrained=pretrained, num_classes=1)
         self.coral_biases = nn.Parameter(torch.arange(0, num_classes-1, dtype=torch.float32).view(1, -1))
 
-    def forward(self, x):
-        logits = self.base(x)
-        return logits + self.coral_biases
+    def forward(self, x, with_logits=False):
+        raw_logits = self.base(x)
+        thresholded_logits = self.coral_biases + raw_logits
+        if with_logits:
+            return raw_logits, thresholded_logits
+        return thresholded_logits
 
 
 class CEModel(nn.Module):
@@ -77,7 +82,7 @@ class CEModel(nn.Module):
         return self.base(x)
 
 
-class CoralConfig(BaseModel):
+class SpotsConfig(BaseModel):
     fold: int = param(1, s='-f', l='--fold')
     model_name: str = param('resnet34', s='-M', l='--model')
     num_classes: int = 4
@@ -96,11 +101,11 @@ class CustomProgressBar(RichProgressBar):
 
 
 class SpotsLightningModule(pl.LightningModule):
-    def __init__(self, config: CoralConfig):
+    def __init__(self, config: SpotsConfig):
         super().__init__()
         self.save_hyperparameters('config')
         self.config = config
-        
+
         # モデルの初期化
         if config.model_type == 'coral':
             self.model = CoralModel(config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
@@ -108,11 +113,11 @@ class SpotsLightningModule(pl.LightningModule):
         else:  # ce
             self.model = CEModel(config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
             self.criterion = nn.CrossEntropyLoss()
-            
+
         self.metric_acc = Accuracy(task='multiclass', num_classes=config.num_classes)
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, x, **kwargs):
+        return self.model(x, **kwargs)
 
     def _get_prediction(self, logits):
         if self.config.model_type == 'coral':
@@ -191,11 +196,11 @@ class CLI(AutoCLI):
         pl.seed_everything(a.seed)
         torch.set_float32_matmul_precision('medium')
 
-    class TrainArgs(CommonArgs, CoralConfig):
+    class TrainArgs(CommonArgs, SpotsConfig):
         num_workers: int = param(4, s='-w', l='--num-workers')
 
     def run_train(self, a: TrainArgs):
-        config = CoralConfig(**a.model_dump())
+        config = SpotsConfig(**a.model_dump())
 
         # Create experiment name and save directory
         exp_name = f'{a.model_type}_{a.model_name}_fold{a.fold}'
@@ -208,9 +213,14 @@ class CLI(AutoCLI):
         train_loader = DataLoader(train_dataset, a.batch_size, num_workers=a.num_workers, shuffle=True)
         val_loader = DataLoader(val_dataset, a.batch_size, num_workers=a.num_workers)
 
+        # バッチ数を計算して適切なログ間隔を設定
+        num_batches = len(train_loader)
+        log_every_n_steps = max(1, min(50, num_batches // 2))  # バッチ数の半分か50の小さい方
+
         # Create logger first to get version
         logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name, sub_dir='logs')
-        version_dir = os.path.join(save_dir, f'version_{logger.version}')
+        version = logger.version
+        version_dir = os.path.join(save_dir, f'version_{version}')
         os.makedirs(version_dir, exist_ok=True)
 
         early_stopping = CustomEarlyStopping(
@@ -224,7 +234,7 @@ class CLI(AutoCLI):
         callbacks = [
             early_stopping,
             ModelCheckpoint(
-                dirpath=version_dir,  # TensorBoardのversion_%dフォルダに保存
+                dirpath=version_dir,
                 monitor='val_loss',
                 mode='min',
                 save_top_k=1,
@@ -234,13 +244,14 @@ class CLI(AutoCLI):
             CustomProgressBar()
         ]
 
-        # Create trainer
+        # Create trainer with adjusted logging interval
         trainer = pl.Trainer(
             max_epochs=config.max_epochs,
             callbacks=callbacks,
             logger=logger,
             accelerator='auto',
-            devices=1
+            devices=1,
+            log_every_n_steps=log_every_n_steps
         )
 
         # Train
@@ -258,7 +269,12 @@ class CLI(AutoCLI):
         data = {
             'test_results': test_results[0],
             'train_results': train_results[0],
+            'version': version,
+            'num_batches': num_batches,
+            'log_every_n_steps': log_every_n_steps
         }
+        if config.model_type == 'coral':
+            data['coral_biases'] = module.model.coral_biases.detach().cpu().numpy().tolist()
         dump_json(data, version_dir, 'results.json')
         dump_json(module.config.model_dump(), version_dir, 'config.json')
 
@@ -292,9 +308,11 @@ class CLI(AutoCLI):
         checkpoint: str = param(..., s='-C')
         batch_size: int = param(32, s='-B')
         num_workers: int = 4
+        save: bool = False
 
     def run_predict(self, a: PredictArgs):
-        module = SpotsLightningModule.load_from_checkpoint(a.checkpoint)
+        checkpoint_path = resolve_checkpoint_path(a.checkpoint)
+        module = SpotsLightningModule.load_from_checkpoint(checkpoint_path)
         print('Config:', module.config)
 
         # デバイスの設定
@@ -303,7 +321,7 @@ class CLI(AutoCLI):
         module.eval()
 
         # チェックポイントのパスから実験ディレクトリを取得
-        exp_dir = os.path.dirname(a.checkpoint)
+        exp_dir = os.path.dirname(checkpoint_path)
         version_dir = os.path.dirname(exp_dir)  # version_0 の親ディレクトリ
         version = os.path.basename(exp_dir).split('_')[1]  # version_0 から 0 を取得
 
@@ -313,19 +331,36 @@ class CLI(AutoCLI):
         # 予測を収集
         all_preds = []
         all_labels = []
+        all_raw_logits = []
+        all_thresholded_logits = []
         with torch.no_grad():
             for batch in test_loader:
                 x, y = batch
                 x = x.to(device)
                 y = y.to(device)
-                logits = module(x)
-                preds = module._get_prediction(logits)
+                raw_logits, thresholded_logits = module(x, with_logits=True)
+                preds = module._get_prediction(thresholded_logits)
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(y.cpu().numpy())
+                all_raw_logits.extend(raw_logits.cpu().numpy())
+                all_thresholded_logits.extend(thresholded_logits.cpu().numpy())
 
         # 結果を表示
         all_preds = np.array(all_preds)
         all_labels = np.array(all_labels)
+        all_raw_logits = np.array(all_raw_logits)
+        all_thresholded_logits = np.array(all_thresholded_logits)
+
+        # CORALモデルの場合、logitsをCSVに保存
+        if module.config.model_type == 'coral':
+            logits_df = pd.DataFrame(all_raw_logits, columns=[f'raw_logit_{i}' for i in range(all_raw_logits.shape[1])])
+            thresholded_df = pd.DataFrame(all_thresholded_logits, columns=[f'thresholded_logit_{i}' for i in range(all_thresholded_logits.shape[1])])
+            logits_df = pd.concat([logits_df, thresholded_df], axis=1)
+            logits_df['filename'] = test_dataset.df['filename'].tolist()
+            logits_df['predicted_class'] = all_preds
+            logits_df['true_class'] = all_labels
+            logits_df.to_csv(os.path.join(exp_dir, 'logits.csv'), index=False)
+            print(f'\nLogits saved to: {os.path.join(exp_dir, "logits.csv")}')
 
         # 混同行列
         cm = confusion_matrix(all_labels, all_preds)
@@ -372,11 +407,218 @@ class CLI(AutoCLI):
         acc = (all_preds == all_labels).mean()
         print(f'\nOverall Accuracy: {acc:.4f}')
 
-        dump_json({
+        results = {
             'accuracy': float(acc),
             'confusion_matrix': cm.tolist(),
             'class_distribution': class_dist,
-        }, exp_dir, 'predict_results.json')
+        }
+        if module.config.model_type == 'coral':
+            results['coral_biases'] = module.model.coral_biases.detach().cpu().numpy().tolist()
+        dump_json(results, exp_dir, 'predict_results.json')
+
+    class AggregateArgs(CommonArgs):
+        model_name: str = param('resnet34', s='-M', l='--model')
+        model_type: str = param('coral', s='-T', l='--type', choices=['coral', 'ce'])
+
+    def run_aggregate(self, a: AggregateArgs):
+        """全foldの結果を集計する"""
+        base_dir = os.path.join('checkpoints', 'spots')
+        report_dir = os.path.join('reports', 'spots', f'{a.model_type}_{a.model_name}')
+        os.makedirs(report_dir, exist_ok=True)
+
+        # 各foldの結果を収集
+        all_logits = []
+        all_preds = []
+        all_labels = []
+        fold_results = []
+        fold_sizes = []  # 各foldのデータ数を記録
+        all_biases = []  # 各foldのcoral_biasesを保存
+
+        for fold in range(1, 6):  # fold 1-5
+            exp_name = f'{a.model_type}_{a.model_name}_fold{fold}'
+            exp_dir = os.path.join(base_dir, exp_name)
+            
+            try:
+                # 最新のバージョンディレクトリを取得
+                version_dirs = sorted(glob.glob(os.path.join(exp_dir, 'version_*')))
+                if not version_dirs:
+                    print(f"Warning: No version directories found for {exp_name}")
+                    continue
+                latest_version = version_dirs[-1]
+
+                # チェックポイントを読み込み
+                ckpts = glob.glob(os.path.join(latest_version, '*.ckpt'))
+                if not ckpts:
+                    print(f"Warning: No checkpoint found in {latest_version}")
+                    continue
+                if len(ckpts) > 1:
+                    print(f"Warning: Multiple checkpoints found in {latest_version}, using the first one")
+                checkpoint_path = ckpts[0]
+
+                # coral_biasesをJSONから読み込み
+                if a.model_type == 'coral':
+                    results_json = os.path.join(latest_version, 'results.json')
+                    if os.path.exists(results_json):
+                        with open(results_json, 'r') as f:
+                            results = json.load(f)
+                            biases = np.array(results['coral_biases'])
+                            all_biases.append(biases)
+                            print(f"\nFold {fold} coral_biases: {biases}")
+
+                # logits.csvを読み込み
+                logits_path = os.path.join(latest_version, 'logits.csv')
+                if not os.path.exists(logits_path):
+                    print(f"Warning: No logits.csv found in {latest_version}")
+                    continue
+
+                # CSVを読み込み
+                df = pd.read_csv(logits_path)
+                fold_sizes.append(len(df))
+
+                # 結果を保存
+                if a.model_type == 'coral':
+                    logit_cols = [col for col in df.columns if col.startswith('raw_logit_')]
+                    all_logits.extend(df[logit_cols].values)
+                all_preds.extend(df['predicted_class'].values)
+                all_labels.extend(df['true_class'].values)
+
+                # foldごとの結果を記録
+                acc = (df['predicted_class'] == df['true_class']).mean()
+                fold_results.append({
+                    'fold': fold,
+                    'accuracy': float(acc),
+                    'checkpoint': checkpoint_path,
+                    'num_samples': len(df)
+                })
+
+                # 各foldのlogits分布をプロット
+                if a.model_type == 'coral':
+                    fold_dir = os.path.join(report_dir, f'fold_{fold}')
+                    os.makedirs(fold_dir, exist_ok=True)
+
+                    # 生のlogits分布
+                    plt.figure(figsize=(15, 5))
+                    for i in range(len(logit_cols)):
+                        plt.subplot(1, len(logit_cols), i+1)
+                        sns.histplot(data=df, x=f'raw_logit_{i}', hue='true_class', multiple='stack')
+                        plt.title(f'Raw Logit {i} Distribution')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(fold_dir, 'raw_logits_histogram.png'))
+                    plt.close()
+
+                    # クラスごとの生のlogits分布
+                    plt.figure(figsize=(15, 5))
+                    for i in range(len(logit_cols)):
+                        plt.subplot(1, len(logit_cols), i+1)
+                        sns.boxplot(data=df, x='true_class', y=f'raw_logit_{i}')
+                        plt.title(f'Raw Logit {i} by Class')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(fold_dir, 'raw_logits_by_class.png'))
+                    plt.close()
+
+                    # 閾値調整後のlogits分布
+                    plt.figure(figsize=(15, 5))
+                    for i in range(len(logit_cols)):
+                        plt.subplot(1, len(logit_cols), i+1)
+                        adjusted_logits = df[f'raw_logit_{i}'] + biases[i]
+                        sns.histplot(x=adjusted_logits, hue=df['true_class'], multiple='stack')
+                        plt.title(f'Adjusted Logit {i} Distribution')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(fold_dir, 'adjusted_logits_histogram.png'))
+                    plt.close()
+
+                    # クラスごとの調整後logits分布
+                    plt.figure(figsize=(15, 5))
+                    for i in range(len(logit_cols)):
+                        plt.subplot(1, len(logit_cols), i+1)
+                        adjusted_logits = df[f'raw_logit_{i}'] + biases[i]
+                        sns.boxplot(x=df['true_class'], y=adjusted_logits)
+                        plt.title(f'Adjusted Logit {i} by Class')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(fold_dir, 'adjusted_logits_by_class.png'))
+                    plt.close()
+
+            except Exception as e:
+                print(f"Error processing fold {fold}: {e}")
+                continue
+
+        # 結果をCSVに保存
+        if a.model_type == 'coral':
+            logits_df = pd.DataFrame(all_logits, columns=[f'raw_logit_{i}' for i in range(all_logits[0].shape[0])])
+            # foldの列を正しく設定
+            fold_column = []
+            for fold, size in enumerate(fold_sizes, 1):
+                fold_column.extend([fold] * size)
+            logits_df['fold'] = fold_column
+            logits_df['predicted_class'] = all_preds
+            logits_df['true_class'] = all_labels
+            logits_df.to_csv(os.path.join(report_dir, 'logits.csv'), index=False)
+
+            # coral_biasesの分布をプロット
+            plt.figure(figsize=(15, 5))
+            biases_df = pd.DataFrame(all_biases, columns=[f'bias_{i}' for i in range(len(all_biases[0]))])
+            sns.boxplot(data=biases_df)
+            plt.title('Distribution of CORAL Biases across Folds')
+            plt.xlabel('Threshold Index')
+            plt.ylabel('Bias Value')
+            plt.savefig(os.path.join(report_dir, 'coral_biases_distribution.png'))
+            plt.close()
+
+            # 全体の生のlogits分布
+            plt.figure(figsize=(15, 5))
+            for i in range(all_logits[0].shape[0]):
+                plt.subplot(1, all_logits[0].shape[0], i+1)
+                sns.histplot(data=logits_df, x=f'raw_logit_{i}', hue='true_class', multiple='stack')
+                plt.title(f'Raw Logit {i} Distribution')
+            plt.tight_layout()
+            plt.savefig(os.path.join(report_dir, 'raw_logits_histogram.png'))
+            plt.close()
+
+            # 全体のクラスごとの生のlogits分布
+            plt.figure(figsize=(15, 5))
+            for i in range(all_logits[0].shape[0]):
+                plt.subplot(1, all_logits[0].shape[0], i+1)
+                sns.boxplot(data=logits_df, x='true_class', y=f'raw_logit_{i}')
+                plt.title(f'Raw Logit {i} by Class')
+            plt.tight_layout()
+            plt.savefig(os.path.join(report_dir, 'raw_logits_by_class.png'))
+            plt.close()
+
+        # 各foldの結果をCSVに保存
+        results_df = pd.DataFrame(fold_results)
+        results_df.to_csv(os.path.join(report_dir, 'results.csv'), index=False)
+
+        # 混同行列
+        cm = confusion_matrix(all_labels, all_preds)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.savefig(os.path.join(report_dir, 'confusion_matrix.png'))
+        plt.close()
+
+        # クラス分布
+        plt.figure(figsize=(10, 6))
+        x = np.arange(4)  # クラス数は4固定
+        width = 0.35
+        plt.bar(x - width/2, [np.sum(np.array(all_labels) == i) for i in range(4)],
+                width, label='Actual')
+        plt.bar(x + width/2, [np.sum(np.array(all_preds) == i) for i in range(4)],
+                width, label='Predicted')
+        plt.title('Class Distribution')
+        plt.xlabel('Class')
+        plt.ylabel('Count')
+        plt.legend()
+        plt.savefig(os.path.join(report_dir, 'class_distribution.png'))
+        plt.close()
+
+        print(f"\nResults saved to: {report_dir}")
+        print(f"Overall accuracy: {np.mean([r['accuracy'] for r in fold_results]):.4f} ± {np.std([r['accuracy'] for r in fold_results]):.4f}")
+        print("\nFold details:")
+        for r in fold_results:
+            print(f"Fold {r['fold']}: accuracy={r['accuracy']:.4f}, samples={r['num_samples']}")
+
 
 
 if __name__ == '__main__':

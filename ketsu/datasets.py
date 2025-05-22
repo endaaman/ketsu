@@ -45,29 +45,35 @@ COLOR_MAP = np.array([
     # [  0, 255,   0, 255], #3 -> green: vessel
 ],dtype=np.uint8)
 
-class ConjDataset(torch.utils.data.Dataset):
+def load_dataset_df(fold, mode):
+    """共通のデータセット読み込み処理"""
+    df = pd.read_csv('./data/dataset_eye.csv')
 
+    # Select items based on fold
+    if mode == 'train':
+        target_mask = df['fold'] != fold
+    else:
+        target_mask = df['fold'] == fold
+    df = df[target_mask].copy()
+
+    # ファイル名カラムを追加
+    df['filename'] = df.apply(lambda row: f'{str(row["test_ID"]).zfill(4)}_{row["R/L"]}_01.png', axis=1)
+
+    return df
+
+class ConjDataset(torch.utils.data.Dataset):
     def __init__(self, fold, mode='train', size=512, augmentation=True, normalization=True):
         self.fold = fold
-        df = pd.read_csv('./data/dataset_eye.csv')
+        self.df = load_dataset_df(fold, mode)
         # Select items that have label mask
-        if mode == 'train':
-            target_mask = df['fold'] != fold
-        else:
-            target_mask = df['fold'] == fold
-        df = df[target_mask]
-        df = df[df['label'] > 0].copy()
-        self.df = df
+        self.df = self.df[self.df['label'] > 0].copy()
 
         self.images = []
         self.labels = []
         self.masks = []
-        for i, row in tqdm(df.iterrows(), total=len(df)):
-            id = row['test_ID']
-            rl = row['R/L']
-            fn = f'{str(id).zfill(4)}_{rl}_01.png'
+        for i, row in tqdm(self.df.iterrows(), total=len(self.df)):
+            fn = row['filename']
 
-            # image = Image.open(J('./data/conj/image/0001_L_01.png/'))
             image = Image.open(f'./data/conj/image/{fn}').convert('RGB')
             label = Image.open(f'./data/conj/label/{fn}').copy()
             mask = self.as_mask(np.array(label))
@@ -94,32 +100,21 @@ class ConjDataset(torch.utils.data.Dataset):
         y = auged['mask']
         return x, y.to(torch.int64)
 
-
     def __len__(self):
         return len(self.images)
 
 class SpotsDataset(torch.utils.data.Dataset):
     def __init__(self, fold, mode='train', size=512, augmentation=True, normalization=True):
         self.fold = fold
-        df = pd.read_csv('./data/dataset_eye.csv')
-
-        # Select items based on fold
-        if mode == 'train':
-            target_mask = df['fold'] != fold
-        else:
-            target_mask = df['fold'] == fold
-        df = df[target_mask]
+        self.df = load_dataset_df(fold, mode)
 
         # Exclude invalid labels (5) and select only rows with valid Majority_label
-        df = df[df['Majority_label'].notna() & (df['Majority_label'] != 5)].copy()
-        self.df = df
+        self.df = self.df[self.df['Majority_label'].notna() & (self.df['Majority_label'] != 5)].copy()
 
         self.images = []
         self.labels = []
-        for i, row in tqdm(df.iterrows(), total=len(df)):
-            id = row['test_ID']
-            rl = row['R/L']
-            fn = f'{str(id).zfill(4)}_{rl}_01.png'
+        for i, row in tqdm(self.df.iterrows(), total=len(self.df)):
+            fn = row['filename']
 
             image = Image.open(f'./data/spots/{fn}').convert('RGB')
             label = int(row['Majority_label'])
@@ -140,4 +135,3 @@ class SpotsDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.images)
-
