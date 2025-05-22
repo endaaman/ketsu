@@ -67,6 +67,16 @@ class CoralModel(nn.Module):
         return logits + self.coral_biases
 
 
+class CEModel(nn.Module):
+    def __init__(self, base, num_classes=4, pretrained=True):
+        super().__init__()
+        self.num_classes = num_classes
+        self.base = timm.create_model(base, pretrained=pretrained, num_classes=num_classes)
+
+    def forward(self, x):
+        return self.base(x)
+
+
 class CoralConfig(BaseModel):
     fold: int = param(1, s='-f', l='--fold')
     model_name: str = param('resnet34', s='-M', l='--model')
@@ -75,6 +85,7 @@ class CoralConfig(BaseModel):
     lr: float = param(1e-4, s='-l', l='--lr')
     batch_size: int = param(32, s='-B', l='--batch-size')
     max_epochs: int = param(100, s='-e', l='--max-epochs')
+    model_type: str = param('coral', s='-t', l='--type', choices=['coral', 'ce'])
 
 
 class CustomProgressBar(RichProgressBar):
@@ -84,31 +95,47 @@ class CustomProgressBar(RichProgressBar):
         return items
 
 
-class CoralLightningModule(pl.LightningModule):
+class SpotsLightningModule(pl.LightningModule):
     def __init__(self, config: CoralConfig):
         super().__init__()
         self.save_hyperparameters('config')
         self.config = config
-        self.model = CoralModel(config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
-        self.criterion = nn.BCEWithLogitsLoss()
+        
+        # モデルの初期化
+        if config.model_type == 'coral':
+            self.model = CoralModel(config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
+            self.criterion = nn.BCEWithLogitsLoss()
+        else:  # ce
+            self.model = CEModel(config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
+            self.criterion = nn.CrossEntropyLoss()
+            
         self.metric_acc = Accuracy(task='multiclass', num_classes=config.num_classes)
 
     def forward(self, x):
         return self.model(x)
 
     def _get_prediction(self, logits):
-        # CORALの予測をクラスに変換
-        # logits: (B, num_classes-1) -> pred: (B,)
-        return (logits > 0).sum(dim=1)
+        if self.config.model_type == 'coral':
+            # CORALの予測をクラスに変換
+            # logits: (B, num_classes-1) -> pred: (B,)
+            return (logits > 0).sum(dim=1)
+        else:
+            # 通常の分類器の予測
+            # logits: (B, num_classes) -> pred: (B,)
+            return logits.argmax(dim=1)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
+        if self.config.model_type == 'coral':
+            y = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
-        loss = self.criterion(logits, y_coral)
+        loss = self.criterion(logits, y)
 
         # 予測とaccuracyの計算
         pred = self._get_prediction(logits)
+        if self.config.model_type == 'coral':
+            # CORALの場合は元のラベルに戻す
+            y = (y > 0).sum(dim=1)
         acc = self.metric_acc(pred, y)
 
         self.log('train_loss', loss, prog_bar=True)
@@ -117,12 +144,16 @@ class CoralLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
+        if self.config.model_type == 'coral':
+            y = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
-        loss = self.criterion(logits, y_coral)
+        loss = self.criterion(logits, y)
 
         # 予測とaccuracyの計算
         pred = self._get_prediction(logits)
+        if self.config.model_type == 'coral':
+            # CORALの場合は元のラベルに戻す
+            y = (y > 0).sum(dim=1)
         acc = self.metric_acc(pred, y)
 
         self.log('val_loss', loss, prog_bar=True)
@@ -131,12 +162,16 @@ class CoralLightningModule(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         x, y = batch
-        y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
+        if self.config.model_type == 'coral':
+            y = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
-        loss = self.criterion(logits, y_coral)
+        loss = self.criterion(logits, y)
 
         # 予測とaccuracyの計算
         pred = self._get_prediction(logits)
+        if self.config.model_type == 'coral':
+            # CORALの場合は元のラベルに戻す
+            y = (y > 0).sum(dim=1)
         acc = self.metric_acc(pred, y)
 
         self.log('loss', loss, prog_bar=True)
@@ -163,7 +198,7 @@ class CLI(AutoCLI):
         config = CoralConfig(**a.model_dump())
 
         # Create experiment name and save directory
-        exp_name = f'coral_{a.model_name}_fold{a.fold}'
+        exp_name = f'{a.model_type}_{a.model_name}_fold{a.fold}'
         save_dir = os.path.join('checkpoints', 'spots', exp_name)
         os.makedirs(save_dir, exist_ok=True)
 
@@ -177,7 +212,6 @@ class CLI(AutoCLI):
         logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name, sub_dir='logs')
         version_dir = os.path.join(save_dir, f'version_{logger.version}')
         os.makedirs(version_dir, exist_ok=True)
-
 
         early_stopping = CustomEarlyStopping(
             monitor='val_loss',
@@ -210,7 +244,7 @@ class CLI(AutoCLI):
         )
 
         # Train
-        module = CoralLightningModule(config)
+        module = SpotsLightningModule(config)
         trainer.fit(module, train_loader, val_loader)
 
         test_ds = SpotsDataset(fold=module.config.fold, mode='val', augmentation=False)
@@ -230,9 +264,13 @@ class CLI(AutoCLI):
 
     class ModelArgs(CommonArgs):
         model_name: str = param('resnet34', s='-M', l='--model')
+        model_type: str = param('coral', s='-t', l='--type', choices=['coral', 'ce'])
 
     def run_model(self, a: ModelArgs):
-        model = CoralModel(a.model_name, num_classes=4, pretrained=False)
+        if a.model_type == 'coral':
+            model = CoralModel(a.model_name, num_classes=4, pretrained=False)
+        else:  # ce
+            model = CEModel(a.model_name, num_classes=4, pretrained=False)
         t = torch.randn(2, 3, 256, 256)
         print(model(t).shape)
 
@@ -242,7 +280,7 @@ class CLI(AutoCLI):
         num_workers: int = 4
 
     def run_test(self, a: TestArgs):
-        module = CoralLightningModule.load_from_checkpoint(a.checkpoint)
+        module = SpotsLightningModule.load_from_checkpoint(a.checkpoint)
         test_dataset = SpotsDataset(fold=module.config.fold, mode='val', augmentation=False)
         test_loader = DataLoader(test_dataset, a.batch_size, num_workers=a.num_workers)
 
@@ -256,7 +294,7 @@ class CLI(AutoCLI):
         num_workers: int = 4
 
     def run_predict(self, a: PredictArgs):
-        module = CoralLightningModule.load_from_checkpoint(a.checkpoint)
+        module = SpotsLightningModule.load_from_checkpoint(a.checkpoint)
         print('Config:', module.config)
 
         # デバイスの設定
