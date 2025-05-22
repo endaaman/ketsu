@@ -13,6 +13,7 @@ from torchmetrics.functional import accuracy
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint, LearningRateMonitor
+import json
 
 
 from .utils import fix_global_seed
@@ -28,6 +29,7 @@ class ConjConfig(BaseModel):
     loss: str = param('ce', choices=['dice', 'focal', 'iou', 'combined'])
     plateau: bool = False
     nopretrained: bool = False
+    max_epochs: int = param(100, s='-e', l='--max-epochs')
 
     arch_name: str = param('ternaus16n', l='--arch', s='-A')
     size: int = 512
@@ -36,6 +38,12 @@ class ConjConfig(BaseModel):
 class CustomEarlyStopping(EarlyStopping):
     def _improvement_message(self, *args, **kwargs):
         return '\n' + super()._improvement_message(*args, **kwargs)
+
+class CustomProgressBar(RichProgressBar):
+    def get_metrics(self, trainer, model):
+        items = super().get_metrics(trainer, model)
+        items.pop("v_num", None)
+        return items
 
 class ConjModule(pl.LightningModule):
 
@@ -66,7 +74,7 @@ class ConjModule(pl.LightningModule):
         jac = self.metric_jac(y, t)
 
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
+        self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_jac', jac, on_step=False, on_epoch=True, prog_bar=False)
         return loss
 
@@ -78,7 +86,7 @@ class ConjModule(pl.LightningModule):
         jac = self.metric_jac(y, t)
 
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
+        self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_jac', jac, on_step=False, on_epoch=True, prog_bar=False)
 
         return {'val_loss': loss, 'val_acc': acc}
@@ -145,23 +153,29 @@ class CLI(AutoCLI):
     class TrainArgs(CommonArgs, ConjConfig):
         num_workers: int = 4
         checkpoint_dir: str = 'checkpoints'
-        experiment_name: str = param('base', l='--exp', s='-E')
 
     def run_train(self, a:TrainArgs):
         config = ConjConfig(**a.model_dump())
 
-        checkpoint_dir = os.path.join(a.checkpoint_dir, a.arch_name)
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        # Create experiment name and save directory
+        exp_name = f'{a.arch_name}_fold{a.fold}'
+        save_dir = os.path.join(a.checkpoint_dir, 'conj', exp_name)
+        os.makedirs(save_dir, exist_ok=True)
 
         train_ds = ConjDataset(fold=a.fold, mode='train', augmentation=True)
         val_ds = ConjDataset(fold=a.fold, mode='val', augmentation=False)
         train_loader = DataLoader(train_ds, a.batch_size, num_workers=a.num_workers, shuffle=True)
         val_loader = DataLoader(val_ds, a.batch_size, num_workers=a.num_workers)
 
+        # Create logger first to get version
+        logger = TensorBoardLogger(os.path.join(a.checkpoint_dir, 'conj'), name=exp_name)
+        version_dir = os.path.join(save_dir, f'version_{logger.version}')
+        os.makedirs(version_dir, exist_ok=True)
+
         checkpoint = ModelCheckpoint(
             monitor='val_loss',
-            dirpath=checkpoint_dir,
-            filename=a.experiment_name or '{version}-{epoch:02d}-{val_loss:.3f}',
+            dirpath=version_dir,
+            filename='{epoch:02d}-{val_loss:.3f}',
             save_top_k=1,
             mode='min',
             save_weights_only=True
@@ -174,20 +188,14 @@ class CLI(AutoCLI):
             verbose=True
         )
 
-        logger = TensorBoardLogger(
-            save_dir='lightning_logs',
-            name=a.experiment_name,
-            default_hp_metric=False
-        )
-
         lr_monitor = LearningRateMonitor(logging_interval='epoch')
 
         trainer = pl.Trainer(
-            max_epochs=100,
+            max_epochs=config.max_epochs,
             devices=1,
             accelerator='gpu',
             benchmark=False,
-            callbacks=[RichProgressBar(), checkpoint, early_stopping, lr_monitor],
+            callbacks=[CustomProgressBar(), checkpoint, early_stopping, lr_monitor],
             log_every_n_steps=1,
             logger=logger,
         )
@@ -201,13 +209,17 @@ class CLI(AutoCLI):
         # Restore best model
         module = ConjModule.load_from_checkpoint(checkpoint.best_model_path)
 
-        test_ds = ConjDataset(mode='val', size=640, with_vessel=config.with_vessel, augmentation=False)
+        test_ds = ConjDataset(mode='val', size=640, augmentation=False)
         test_loader = DataLoader(test_ds, a.batch_size, num_workers=a.num_workers)
-        # trainer = pl.Trainer(
-        #     accelerator='gpu',
-        #     devices=1,
-        # )
-        print(trainer.test(module, test_loader))
+        results = trainer.test(module, test_loader)
+        
+        # Save results to JSON
+        results_dict = {
+            'test_results': results[0],
+            'config': config.model_dump()
+        }
+        with open(os.path.join(version_dir, 'results.json'), 'w') as f:
+            json.dump(results_dict, f, indent=2)
 
 
     class PredictArgs(CommonArgs):

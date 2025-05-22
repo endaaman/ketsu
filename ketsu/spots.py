@@ -158,7 +158,7 @@ class CLI(AutoCLI):
 
         # Create experiment name and save directory
         exp_name = f'coral_{a.model_name}_fold{a.fold}'
-        save_dir = os.path.join('checkpoints', exp_name)
+        save_dir = os.path.join('checkpoints', 'spots', exp_name)
         os.makedirs(save_dir, exist_ok=True)
 
         # Create datasets and dataloaders
@@ -168,7 +168,7 @@ class CLI(AutoCLI):
         val_loader = DataLoader(val_dataset, a.batch_size, num_workers=a.num_workers)
 
         # Create logger first to get version
-        logger = TensorBoardLogger('checkpoints', name=exp_name)
+        logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name)
         version_dir = os.path.join(save_dir, f'version_{logger.version}')
         os.makedirs(version_dir, exist_ok=True)
 
