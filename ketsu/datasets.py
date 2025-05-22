@@ -38,8 +38,6 @@ def get_aug(augmentation, size, normalization=True):
     return A.Compose(aa)
 
 
-CONJ_DATA_DIR = './data/conju'
-
 COLOR_MAP = np.array([
     [  0,   0,   0,   0], #0 -> BG
     [255,   0,   0, 255], #1 -> red  : cornea
@@ -69,9 +67,9 @@ class ConjDataset(torch.utils.data.Dataset):
             rl = row['R/L']
             fn = f'{str(id).zfill(4)}_{rl}_01.png'
 
-            # image = Image.open(J('./data/conju/image/0001_L_01.png/'))
-            image = Image.open(f'./data/conju/image/{fn}').convert('RGB')
-            label = Image.open(f'./data/conju/label/{fn}').copy()
+            # image = Image.open(J('./data/conj/image/0001_L_01.png/'))
+            image = Image.open(f'./data/conj/image/{fn}').convert('RGB')
+            label = Image.open(f'./data/conj/label/{fn}').copy()
             mask = self.as_mask(np.array(label))
             self.images.append(image)
             self.labels.append(label)

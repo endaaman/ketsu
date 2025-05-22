@@ -295,7 +295,7 @@ class UResNet(nn.Module):
         return out
 
 
-def create_model(name, num_classes, pretrained=True):
+def create_segmentation_model(name, num_classes, pretrained=True):
     if name == 'baseline':
         m = UNet(
               in_channels=3,
@@ -306,11 +306,47 @@ def create_model(name, num_classes, pretrained=True):
         )
         return m
 
+    # segmentation_models_pytorch (SMP) のモデル
     if name.startswith('smp.'):
-        return smp.Unet(name.replace('smp.', ''),
-                        in_channels=3,
-                        classes=num_classes,
-                        encoder_weights='imagenet' if pretrained else None)
+        parts = name.replace('smp.', '').split('.')
+
+        # アーキテクチャとエンコーダを分離
+        if len(parts) >= 2:
+            arch = parts[0]
+            encoder = parts[1]
+        else:
+            arch = parts[0]
+            encoder = 'resnet34'  # デフォルトエンコーダ
+
+        # 利用可能なアーキテクチャの確認
+        valid_archs = ['unet', 'unetplusplus', 'manet', 'linknet',
+                      'fpn', 'pspnet', 'deeplabv3', 'deeplabv3plus', 'pan']
+
+        # SMPのモデル作成関数を取得する部分を修正
+        # 正しいモデル名のマッピングを作成
+        smp_model_map = {
+            'unet': 'Unet',
+            'unetplusplus': 'UnetPlusPlus',
+            'manet': 'MAnet',
+            'linknet': 'Linknet',
+            'fpn': 'FPN',
+            'pspnet': 'PSPNet',
+            'deeplabv3': 'DeepLabV3',
+            'deeplabv3plus': 'DeepLabV3Plus',
+            'pan': 'PAN'
+        }
+
+        if arch in smp_model_map:
+            model_fn = getattr(smp, smp_model_map[arch])
+        else:
+            raise ValueError(f"Invalid SMP architecture: {arch}. Valid options are: {', '.join(valid_archs)}")
+
+        return model_fn(
+            encoder_name=encoder,
+            in_channels=3,
+            classes=num_classes,
+            encoder_weights='imagenet' if pretrained else None
+        )
 
     M = {
         'ternaus11': UNet11,
