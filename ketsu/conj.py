@@ -17,15 +17,13 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, RichProgressBar, ModelCheckpoint, LearningRateMonitor
 from scipy import ndimage
 
-from .utils import fix_global_seed
+from .utils import fix_global_seed, CustomEarlyStopping
 from .datasets import ConjDataset, COLOR_MAP
 from .models import create_segmentation_model
 from .losses import get_loss, CrossEntropy
 
 
-# Utility function to save test results
-def save_test_results(results, config, save_dir):
-    """Save test results and config to JSON file"""
+def save_results(results, config, save_dir):
     results_dict = {
         'test_results': results[0],
         'config': config.model_dump()
@@ -47,10 +45,6 @@ class ConjConfig(BaseModel):
     model_name: str = param('ternaus16n', l='--model', s='-M')
     size: int = 512
 
-
-class CustomEarlyStopping(EarlyStopping):
-    def _improvement_message(self, *args, **kwargs):
-        return '\n' + super()._improvement_message(*args, **kwargs)
 
 class CustomProgressBar(RichProgressBar):
     def get_metrics(self, trainer, model):
@@ -318,7 +312,7 @@ class CLI(AutoCLI):
         results = trainer.test(module, test_loader)
 
         # Save results to JSON
-        save_test_results(results, config, save_dir)
+        save_results(results, config, save_dir)
 
 
     class PredictArgs(CommonArgs):
@@ -366,7 +360,7 @@ class CLI(AutoCLI):
         results = predict_trainer.test(module, test_loader)
 
         # Save results to JSON
-        save_test_results(results, module.config, output_dir)
+        save_results(results, module.config, output_dir)
 
         print(f"Prediction completed. Results saved to {output_dir}")
 

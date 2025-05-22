@@ -18,7 +18,7 @@ import json
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
-from .utils import fix_global_seed
+from .utils import fix_global_seed, CustomEarlyStopping
 from .datasets import SpotsDataset
 
 
@@ -48,6 +48,13 @@ def to_coral_labels(y, num_classes=4):
     return (y.unsqueeze(-1) > thresholds).float()
 
 
+
+def dump_json(data, save_dir, filename='results.json'):
+    with open(os.path.join(save_dir, filename), 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"Results saved to: {os.path.join(save_dir, filename)}")
+
+
 class CoralModel(nn.Module):
     def __init__(self, base, num_classes=4, pretrained=True):
         super().__init__()
@@ -68,7 +75,6 @@ class CoralConfig(BaseModel):
     lr: float = param(1e-4, s='-l', l='--lr')
     batch_size: int = param(32, s='-B', l='--batch-size')
     max_epochs: int = param(100, s='-e', l='--max-epochs')
-    early_stopping_patience: int = 10
 
 
 class CustomProgressBar(RichProgressBar):
@@ -100,11 +106,11 @@ class CoralLightningModule(pl.LightningModule):
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
         loss = self.criterion(logits, y_coral)
-        
+
         # 予測とaccuracyの計算
         pred = self._get_prediction(logits)
         acc = self.metric_acc(pred, y)
-        
+
         self.log('train_loss', loss, prog_bar=True)
         self.log('train_acc', acc, prog_bar=True)
         return loss
@@ -114,11 +120,11 @@ class CoralLightningModule(pl.LightningModule):
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
         loss = self.criterion(logits, y_coral)
-        
+
         # 予測とaccuracyの計算
         pred = self._get_prediction(logits)
         acc = self.metric_acc(pred, y)
-        
+
         self.log('val_loss', loss, prog_bar=True)
         self.log('val_acc', acc, prog_bar=True)
         return loss
@@ -128,14 +134,14 @@ class CoralLightningModule(pl.LightningModule):
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         logits = self(x)
         loss = self.criterion(logits, y_coral)
-        
+
         # 予測とaccuracyの計算
         pred = self._get_prediction(logits)
         acc = self.metric_acc(pred, y)
-        
-        self.log('test_loss', loss, prog_bar=True)
-        self.log('test_acc', acc, prog_bar=True)
-        return {'test_loss': loss, 'test_acc': acc}
+
+        self.log('loss', loss, prog_bar=True)
+        self.log('acc', acc, prog_bar=True)
+        return {'loss': loss, 'acc': acc}
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.config.lr)
@@ -168,19 +174,27 @@ class CLI(AutoCLI):
         val_loader = DataLoader(val_dataset, a.batch_size, num_workers=a.num_workers)
 
         # Create logger first to get version
-        logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name)
+        logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name, sub_dir='logs')
         version_dir = os.path.join(save_dir, f'version_{logger.version}')
         os.makedirs(version_dir, exist_ok=True)
 
+
+        early_stopping = CustomEarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            mode='min',
+            verbose=True
+        )
+
         # Setup callbacks
         callbacks = [
-            EarlyStopping(monitor='val_loss', patience=config.early_stopping_patience, mode='min'),
+            early_stopping,
             ModelCheckpoint(
                 dirpath=version_dir,  # TensorBoardのversion_%dフォルダに保存
                 monitor='val_loss',
                 mode='min',
                 save_top_k=1,
-                filename='{epoch}-{val_loss:.4f}'
+                filename='{epoch:02d}-{val_loss:.3f}',
             ),
             LearningRateMonitor(logging_interval='epoch'),
             CustomProgressBar()
@@ -199,16 +213,20 @@ class CLI(AutoCLI):
         module = CoralLightningModule(config)
         trainer.fit(module, train_loader, val_loader)
 
-        # 学習後の評価と結果の保存
-        results = trainer.test(module, val_loader)
-        
-        # 結果をJSONとして保存
-        results_dict = {
-            'test_results': results[0],
-            'config': config.model_dump()
+        test_ds = SpotsDataset(fold=module.config.fold, mode='val', augmentation=False)
+        test_loader = DataLoader(test_ds, a.batch_size, num_workers=a.num_workers)
+        test_results = trainer.test(module, test_loader)
+
+        train_ds = SpotsDataset(fold=module.config.fold, mode='train', augmentation=False)
+        train_loader = DataLoader(train_ds, a.batch_size, num_workers=a.num_workers)
+        train_results = trainer.test(module, train_loader)
+
+        data = {
+            'test_results': test_results[0],
+            'train_results': train_results[0],
         }
-        with open(os.path.join(version_dir, 'results.json'), 'w') as f:
-            json.dump(results_dict, f, indent=2)
+        dump_json(data, version_dir, 'results.json')
+        dump_json(module.config.model_dump(), version_dir, 'config.json')
 
     class ModelArgs(CommonArgs):
         model_name: str = param('resnet34', s='-M', l='--model')
@@ -219,8 +237,8 @@ class CLI(AutoCLI):
         print(model(t).shape)
 
     class TestArgs(CommonArgs):
-        checkpoint: str = param(..., s='-c')
-        batch_size: int = param(32, s='-b')
+        checkpoint: str = param(..., s='-C')
+        batch_size: int = param(32, s='-B')
         num_workers: int = 4
 
     def run_test(self, a: TestArgs):
@@ -233,8 +251,8 @@ class CLI(AutoCLI):
         print(results)
 
     class PredictArgs(CommonArgs):
-        checkpoint: str = param(..., s='-c')
-        batch_size: int = param(32, s='-b')
+        checkpoint: str = param(..., s='-C')
+        batch_size: int = param(32, s='-B')
         num_workers: int = 4
 
     def run_predict(self, a: PredictArgs):
@@ -253,7 +271,7 @@ class CLI(AutoCLI):
 
         test_dataset = SpotsDataset(fold=module.config.fold, mode='val', augmentation=False)
         test_loader = DataLoader(test_dataset, a.batch_size, num_workers=a.num_workers)
-        
+
         # 予測を収集
         all_preds = []
         all_labels = []
@@ -270,12 +288,12 @@ class CLI(AutoCLI):
         # 結果を表示
         all_preds = np.array(all_preds)
         all_labels = np.array(all_labels)
-        
+
         # 混同行列
         cm = confusion_matrix(all_labels, all_preds)
         print('\nConfusion Matrix:')
         print(cm)
-        
+
         # 混同行列のプロット
         plt.figure(figsize=(10, 8))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
@@ -284,7 +302,7 @@ class CLI(AutoCLI):
         plt.ylabel('True')
         plt.savefig(os.path.join(exp_dir, 'confusion_matrix.png'))
         plt.close()
-        
+
         # 各クラスの予測分布
         print('\nPrediction Distribution:')
         class_dist = {}
@@ -296,14 +314,14 @@ class CLI(AutoCLI):
                 'predicted': int(pred_count),
                 'actual': int(true_count)
             }
-        
+
         # 予測分布のプロット
         plt.figure(figsize=(10, 6))
         x = np.arange(module.config.num_classes)
         width = 0.35
-        plt.bar(x - width/2, [class_dist[f'class_{i}']['actual'] for i in range(module.config.num_classes)], 
+        plt.bar(x - width/2, [class_dist[f'class_{i}']['actual'] for i in range(module.config.num_classes)],
                 width, label='Actual')
-        plt.bar(x + width/2, [class_dist[f'class_{i}']['predicted'] for i in range(module.config.num_classes)], 
+        plt.bar(x + width/2, [class_dist[f'class_{i}']['predicted'] for i in range(module.config.num_classes)],
                 width, label='Predicted')
         plt.title('Class Distribution')
         plt.xlabel('Class')
@@ -311,20 +329,16 @@ class CLI(AutoCLI):
         plt.legend()
         plt.savefig(os.path.join(exp_dir, 'class_distribution.png'))
         plt.close()
-        
+
         # 全体のaccuracy
         acc = (all_preds == all_labels).mean()
         print(f'\nOverall Accuracy: {acc:.4f}')
-        
-        # 結果をJSONとして保存
-        results = {
+
+        dump_json({
             'accuracy': float(acc),
             'confusion_matrix': cm.tolist(),
             'class_distribution': class_dist,
-            'config': module.config.model_dump()
-        }
-        with open(os.path.join(exp_dir, 'predict_results.json'), 'w') as f:
-            json.dump(results, f, indent=2)
+        }, exp_dir, 'predict_results.json')
 
 
 if __name__ == '__main__':
