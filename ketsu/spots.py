@@ -116,7 +116,7 @@ class SpotsLightningModule(pl.LightningModule):
         # (B, num_classes-1) -> (B, num_classes)
         batch_size = thresholded_logits.shape[0]
         ce_logits = torch.zeros(batch_size, self.config.num_classes, device=thresholded_logits.device)
-        
+
         # 各クラスのlogitsを計算
         for i in range(self.config.num_classes):
             if i == 0:
@@ -128,17 +128,17 @@ class SpotsLightningModule(pl.LightningModule):
             else:
                 # 中間のクラス: thresholded_logits[i] - thresholded_logits[i-1]
                 ce_logits[:, i] = thresholded_logits[:, i] - thresholded_logits[:, i-1]
-        
+
         return ce_logits
 
     def training_step(self, batch, batch_idx):
         x, y = batch
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         raw_logits, thresholded_logits = self(x, with_logits=True)
-        
+
         # CORAL loss
         coral_loss = self.coral_criterion(thresholded_logits, y_coral)
-        
+
         # CrossEntropy loss
         ce_logits = self._get_ce_logits(thresholded_logits)
         ce_loss = self.ce_criterion(ce_logits, y)
@@ -151,6 +151,10 @@ class SpotsLightningModule(pl.LightningModule):
         # 損失を結合
         loss = coral_loss + self.config.ce_coef * ce_loss
 
+        # CORAL biasをログに記録
+        for i, bias in enumerate(self.model.coral_biases[0]):
+            self.log(f'coral_bias_{i}', bias, prog_bar=False)
+
         self.log('train_loss', loss, prog_bar=True)
         self.log('train_coral_loss', coral_loss)
         self.log('train_ce_loss', ce_loss)
@@ -161,10 +165,10 @@ class SpotsLightningModule(pl.LightningModule):
         x, y = batch
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         raw_logits, thresholded_logits = self(x, with_logits=True)
-        
+
         # CORAL loss
         coral_loss = self.coral_criterion(thresholded_logits, y_coral)
-        
+
         # CrossEntropy loss
         ce_logits = self._get_ce_logits(thresholded_logits)
         ce_loss = self.ce_criterion(ce_logits, y)
@@ -187,10 +191,10 @@ class SpotsLightningModule(pl.LightningModule):
         x, y = batch
         y_coral = to_coral_labels(y, num_classes=self.model.num_classes)
         raw_logits, thresholded_logits = self(x, with_logits=True)
-        
+
         # CORAL loss
         coral_loss = self.coral_criterion(thresholded_logits, y_coral)
-        
+
         # CrossEntropy loss
         ce_logits = self._get_ce_logits(thresholded_logits)
         ce_loss = self.ce_criterion(ce_logits, y)
@@ -249,8 +253,9 @@ class CLI(AutoCLI):
 
         # バッチ数を計算して適切なログ間隔を設定
         num_batches = len(train_loader)
-        # エポックあたり約10回程度のログを取るように調整
-        log_every_n_steps = max(1, min(100, num_batches // 10))
+        print(num_batches)
+        # エポックあたり約5回程度のログを取るように調整（より滑らかなグラフのため）
+        log_every_n_steps = max(1, min(100, num_batches // 2))
 
         # Create logger first to get version
         logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name, sub_dir='logs')
@@ -519,7 +524,7 @@ class CLI(AutoCLI):
         for fold in range(1, 6):  # fold 1-5
             fold_exp_name = f'{exp_name}_fold{fold}'
             exp_dir = os.path.join(base_dir, fold_exp_name)
-            
+
             try:
                 # 最新のバージョンディレクトリを取得
                 version_dirs = sorted(glob.glob(os.path.join(exp_dir, 'version_*')))
