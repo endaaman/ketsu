@@ -61,11 +61,13 @@ class CoralModel(nn.Module):
     def __init__(self, base, num_classes=4, pretrained=True):
         super().__init__()
         self.num_classes = num_classes
-        self.base = timm.create_model(base, pretrained=pretrained, num_classes=1)
+        self.base = timm.create_model(base, pretrained=pretrained, num_classes=0)
+        self.classifier = nn.Linear(self.base.num_features, 1)
         self.coral_biases = nn.Parameter(torch.arange(0, num_classes-1, dtype=torch.float32).view(1, -1))
 
     def forward(self, x, with_logits=False):
-        raw_logits = self.base(x)
+        features = self.base(x)
+        raw_logits = self.classifier(features)
         thresholded_logits = self.coral_biases + raw_logits
         if with_logits:
             return raw_logits, thresholded_logits
@@ -80,7 +82,7 @@ class SpotsConfig(BaseModel):
     lr: float = param(1e-4, s='-l', l='--lr')
     batch_size: int = param(32, s='-B', l='--batch-size')
     max_epochs: int = param(100, s='-e', l='--max-epochs')
-    coral_threshold_lr: float = param(1e-4, s='-L', l='--coral-threshold-lr')
+    bias_lr: float = param(1e-3, l='--bias-lr')
     ce_coef: float = param(0.0, s='-c', l='--ce-coef', help='Coefficient for CrossEntropy loss')
 
 
@@ -149,7 +151,8 @@ class SpotsLightningModule(pl.LightningModule):
         acc = self.metric_acc(pred, y)
 
         # 損失を結合
-        loss = coral_loss + self.config.ce_coef * ce_loss
+        coef = self.config.ce_coef
+        loss = coral_loss * (1-coef) + ce_loss * coef
 
         # CORAL biasをログに記録
         for i, bias in enumerate(self.model.coral_biases[0]):
@@ -215,8 +218,8 @@ class SpotsLightningModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW([
-            {'params': self.model.base.parameters(), 'lr': self.config.lr},
-            {'params': self.model.coral_biases, 'lr': self.config.coral_threshold_lr}
+            {'params': self.model.base.parameters(), 'lr': self.config.lr },
+            {'params': self.model.coral_biases, 'lr': self.config.bias_lr}
         ])
         return optimizer
 
@@ -241,9 +244,9 @@ class CLI(AutoCLI):
         exp_name = a.model_name
         if a.prefix:
             exp_name = f'{a.prefix}_{exp_name}'
-        exp_name = f'{exp_name}_fold{a.fold}'
-        save_dir = os.path.join('checkpoints', 'spots', exp_name)
-        os.makedirs(save_dir, exist_ok=True)
+        save_dir = os.path.join('checkpoints', 'spots', f'fold{a.fold}')
+        exp_dir = os.path.join(save_dir, exp_name)
+        os.makedirs(exp_dir, exist_ok=True)
 
         # Create datasets and dataloaders
         train_dataset = SpotsDataset(fold=a.fold, mode='train', augmentation=True)
@@ -253,15 +256,17 @@ class CLI(AutoCLI):
 
         # バッチ数を計算して適切なログ間隔を設定
         num_batches = len(train_loader)
-        print(num_batches)
         # エポックあたり約5回程度のログを取るように調整（より滑らかなグラフのため）
         log_every_n_steps = max(1, min(100, num_batches // 2))
 
         # Create logger first to get version
-        logger = TensorBoardLogger(os.path.join('checkpoints', 'spots'), name=exp_name, sub_dir='logs')
+        logger = TensorBoardLogger(save_dir,
+                                   name=exp_name,
+                                   sub_dir='logs')
         version = logger.version
-        version_dir = os.path.join(save_dir, f'version_{version}')
+        version_dir = os.path.join(exp_dir, f'version_{version}')
         os.makedirs(version_dir, exist_ok=True)
+        print(f'Version dir: {version_dir}')
 
         early_stopping = CustomEarlyStopping(
             monitor='val_loss',
@@ -501,15 +506,10 @@ class CLI(AutoCLI):
         dump_json(results, exp_dir, 'predict_results.json')
 
     class AggregateArgs(CommonArgs):
-        model_name: str = param('resnet34', s='-M', l='--model')
-        prefix: str = param('', s='-p', l='--prefix', help='Prefix for experiment name')
+        exp_name: str = param(..., s='-e', l='--exp')
 
     def run_aggregate(self, a: AggregateArgs):
         """全foldの結果を集計する"""
-        base_dir = os.path.join('checkpoints', 'spots')
-        exp_name = a.model_name
-        if a.prefix:
-            exp_name = f'{a.prefix}_{exp_name}'
         report_dir = os.path.join('reports', 'spots', exp_name)
         os.makedirs(report_dir, exist_ok=True)
 
@@ -522,8 +522,7 @@ class CLI(AutoCLI):
         all_biases = []  # 各foldのcoral_biasesを保存
 
         for fold in range(1, 6):  # fold 1-5
-            fold_exp_name = f'{exp_name}_fold{fold}'
-            exp_dir = os.path.join(base_dir, fold_exp_name)
+            exp_dir = os.path.join('checkpoints', 'spots', f'fold{fold}', a.exp_name)
 
             try:
                 # 最新のバージョンディレクトリを取得
